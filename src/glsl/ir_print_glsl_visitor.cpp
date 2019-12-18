@@ -1283,11 +1283,12 @@ void ir_print_glsl_visitor::visit(ir_assignment *ir)
 	if (try_print_array_assignment (ir->lhs, ir->rhs))
 		return;
 		
-   if (ir->condition)
-   {
-      ir->condition->accept(this);
-	  buffer.asprintf_append (" ");
-   }
+	if (ir->condition)
+	{
+		buffer.asprintf_append ("if (");
+		ir->condition->accept(this);
+		buffer.asprintf_append (") ");
+	}
 	
 	emit_assignment_part (ir->lhs, ir->rhs, ir->write_mask, NULL);
 }
