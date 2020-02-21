@@ -147,6 +147,12 @@ texture_external(const _mesa_glsl_parse_state *state)
    return state->OES_EGL_image_external_enable;
 }
 
+static bool
+texture_external_essl3(const _mesa_glsl_parse_state *state)
+{
+    return state->OES_EGL_image_external_essl3_enable;
+}
+
 /** True if texturing functions with explicit LOD are allowed. */
 static bool
 lod_exists_in_stage(const _mesa_glsl_parse_state *state)
@@ -1208,6 +1214,8 @@ builtin_builder::create_builtins()
                 _textureSize(texture_multisample, glsl_type::ivec3_type, glsl_type::sampler2DMSArray_type),
                 _textureSize(texture_multisample, glsl_type::ivec3_type, glsl_type::isampler2DMSArray_type),
                 _textureSize(texture_multisample, glsl_type::ivec3_type, glsl_type::usampler2DMSArray_type),
+
+                _textureSize(texture_external_essl3, glsl_type::ivec2_type, glsl_type::samplerExternalOES_type),
                 NULL);
 
    add_function("texture",
@@ -1255,6 +1263,8 @@ builtin_builder::create_builtins()
                 _texture(ir_tex, v130, glsl_type::uvec4_type, glsl_type::usampler2DRect_type, glsl_type::vec2_type),
 
                 _texture(ir_tex, v130, glsl_type::float_type, glsl_type::sampler2DRectShadow_type, glsl_type::vec3_type),
+
+                _texture(ir_tex, texture_external_essl3, glsl_type::vec4_type,  glsl_type::samplerExternalOES_type, glsl_type::vec2_type),
 
                 _texture(ir_txb, v130_fs_only, glsl_type::vec4_type,  glsl_type::sampler1D_type,  glsl_type::float_type),
                 _texture(ir_txb, v130_fs_only, glsl_type::ivec4_type, glsl_type::isampler1D_type, glsl_type::float_type),
