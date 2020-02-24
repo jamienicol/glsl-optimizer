@@ -260,6 +260,8 @@ _mesa_print_ir_glsl(exec_list *instructions,
 			str.asprintf_append ("#extension GL_OES_EGL_image_external_essl3 : enable\n");
 		if (state->KHR_blend_equation_advanced_enable)
 			str.asprintf_append ("#extension GL_KHR_blend_equation_advanced : enable\n");
+		if (state->EXT_blend_func_extended_enable)
+			str.asprintf_append ("#extension GL_EXT_blend_func_extended : enable\n");
 
 		// TODO: support other blends besides all
 		if (state->fs_blend_support == BLEND_ALL) {
@@ -460,7 +462,12 @@ void ir_print_glsl_visitor::visit(ir_variable *ir)
 	{
 		const int binding_base = (this->state->stage == MESA_SHADER_VERTEX ? (int)VERT_ATTRIB_GENERIC0 : (int)FRAG_RESULT_DATA0);
 		const int location = ir->data.location - binding_base;
-		buffer.asprintf_append ("layout(location=%d) ", location);
+                if (ir->data.explicit_index) {
+			const int index = ir->data.index;
+                        buffer.asprintf_append ("layout(location=%d, index=%d) ", location, index);
+                } else {
+                        buffer.asprintf_append ("layout(location=%d) ", location);
+                }
 	}
 	
 	int decormode = this->mode;

@@ -109,6 +109,7 @@ void initialize_context_to_defaults(struct gl_context *ctx, gl_api api)
    ctx->Extensions.OES_EGL_image_external_essl3 = true;
    ctx->Extensions.OES_standard_derivatives = true;
 
+   ctx->Extensions.EXT_blend_func_extended = true;
    ctx->Extensions.EXT_draw_instanced = true;
    ctx->Extensions.EXT_gpu_shader4 = true;
    ctx->Extensions.EXT_shader_integer_mix = true;
