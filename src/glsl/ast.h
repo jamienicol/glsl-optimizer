@@ -512,6 +512,8 @@ struct ast_type_qualifier {
          unsigned stream:1; /**< Has stream value assigned  */
          unsigned explicit_stream:1; /**< stream value assigned explicitly by shader code */
          /** \} */
+
+         unsigned blend_support:1;
       }
       /** \brief Set of flags, accessed by name. */
       q;

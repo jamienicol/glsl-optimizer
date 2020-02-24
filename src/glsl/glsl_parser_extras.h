@@ -449,6 +449,8 @@ struct _mesa_glsl_parse_state {
 
    /* KHR extensions go here, sorted alphabetically.
     */
+   bool KHR_blend_equation_advanced_enable;
+   bool KHR_blend_equation_advanced_warn;
 
    /* OES extensions go here, sorted alphabetically.
     */
@@ -512,6 +514,8 @@ struct _mesa_glsl_parse_state {
    unsigned gs_input_size;
 
    bool early_fragment_tests;
+
+   unsigned fs_blend_support;
 
    /** Atomic counter offsets by binding */
    unsigned atomic_counter_offsets[MAX_COMBINED_ATOMIC_BUFFERS];

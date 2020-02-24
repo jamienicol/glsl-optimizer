@@ -116,6 +116,8 @@ void initialize_context_to_defaults(struct gl_context *ctx, gl_api api)
    ctx->Extensions.EXT_texture_array = true;
    ctx->Extensions.EXT_draw_buffers = true;
 
+   ctx->Extensions.KHR_blend_equation_advanced = true;
+
    ctx->Extensions.NV_texture_rectangle = true;
 
    ctx->Const.AllowGLSLExtensionDirectiveMidShader = true; // makes it easier to run tests

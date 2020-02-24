@@ -1341,11 +1341,56 @@ layout_qualifier_id:
                }
             }
          }
+      }
 
-         if (!$$.flags.i &&
-             match_layout_qualifier($1, "early_fragment_tests", state) == 0) {
-            $$.flags.q.early_fragment_tests = 1;
+      if (!$$.flags.i) {
+         static const struct {
+            const char *s;
+            uint32_t mask;
+         } map[] = {
+            { "blend_support_multiply",       BLEND_MULTIPLY },
+            { "blend_support_screen",         BLEND_SCREEN },
+            { "blend_support_overlay",        BLEND_OVERLAY },
+            { "blend_support_darken",         BLEND_DARKEN },
+            { "blend_support_lighten",        BLEND_LIGHTEN },
+            { "blend_support_colordodge",     BLEND_COLORDODGE },
+            { "blend_support_colorburn",      BLEND_COLORBURN },
+            { "blend_support_hardlight",      BLEND_HARDLIGHT },
+            { "blend_support_softlight",      BLEND_SOFTLIGHT },
+            { "blend_support_difference",     BLEND_DIFFERENCE },
+            { "blend_support_exclusion",      BLEND_EXCLUSION },
+            { "blend_support_hsl_hue",        BLEND_HSL_HUE },
+            { "blend_support_hsl_saturation", BLEND_HSL_SATURATION },
+            { "blend_support_hsl_color",      BLEND_HSL_COLOR },
+            { "blend_support_hsl_luminosity", BLEND_HSL_LUMINOSITY },
+            { "blend_support_all_equations",  BLEND_ALL },
+         };
+         for (unsigned i = 0; i < ARRAY_SIZE(map); i++) {
+            if (match_layout_qualifier($1, map[i].s, state) == 0) {
+               $$.flags.q.blend_support = 1;
+               state->fs_blend_support |= map[i].mask;
+               break;
+            }
          }
+
+         if ($$.flags.i &&
+             !state->KHR_blend_equation_advanced_enable &&
+             !state->is_version(0, 320)) {
+            _mesa_glsl_error(& @1, state,
+                             "advanced blending layout qualifiers require "
+                             "ESSL 3.20 or KHR_blend_equation_advanced");
+         }
+
+         if ($$.flags.i && state->stage != MESA_SHADER_FRAGMENT) {
+            _mesa_glsl_error(& @1, state,
+                             "advanced blending layout qualifiers only "
+                             "valid in fragment shaders");
+         }
+      }
+
+      if (!$$.flags.i &&
+          match_layout_qualifier($1, "early_fragment_tests", state) == 0) {
+         $$.flags.q.early_fragment_tests = 1;
       }
 
       if (!$$.flags.i) {
@@ -2653,11 +2698,7 @@ layout_defaults:
 
    | layout_qualifier OUT_TOK ';'
    {
-      if (state->stage != MESA_SHADER_GEOMETRY) {
-         _mesa_glsl_error(& @1, state,
-                          "out layout qualifiers only valid in "
-                          "geometry shaders");
-      } else {
+      if (state->stage == MESA_SHADER_GEOMETRY) {
          if ($1.flags.q.prim_type) {
             /* Make sure this is a valid output primitive type. */
             switch ($1.prim_type) {
