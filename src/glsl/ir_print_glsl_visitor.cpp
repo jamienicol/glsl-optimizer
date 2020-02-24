@@ -777,6 +777,21 @@ void ir_print_glsl_visitor::visit(ir_expression *ir)
 			ir->operands[1]->accept(this);
 		buffer.asprintf_append ("]");
 	}
+        else if (ir->operation == ir_binop_mod && ir->operands[0]->type->is_integer())
+	{
+		assert(ir->get_num_operands() == 2);
+		assert(ir->operands[1]->type->is_integer());
+
+		buffer.asprintf_append ("(");
+		if (ir->operands[0])
+			ir->operands[0]->accept(this);
+
+		buffer.asprintf_append (" %s ", "%");
+
+		if (ir->operands[1])
+			ir->operands[1]->accept(this);
+		buffer.asprintf_append (")");
+	}
 	else if (is_binop_func_like(ir->operation, ir->type))
 	{
 		if (ir->operation == ir_binop_mod)
@@ -797,7 +812,7 @@ void ir_print_glsl_visitor::visit(ir_expression *ir)
 			ir->operands[1]->accept(this);
 		buffer.asprintf_append (")");
 		if (ir->operation == ir_binop_mod)
-            buffer.asprintf_append ("))");
+			buffer.asprintf_append ("))");
 	}
 	else if (ir->get_num_operands() == 2)
 	{
