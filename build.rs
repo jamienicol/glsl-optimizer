@@ -12,6 +12,7 @@ fn main() {
         .file("src/glsl/glcpp/glcpp-lex.c")
         .file("src/glsl/glcpp/glcpp-parse.c")
         .file("src/glsl/glcpp/pp.c")
+        .file("src/glsl/strtod.c")
         .file("src/util/hash_table.c")
         .file("src/util/ralloc.c")
         .compile("glcpp-library");
@@ -125,7 +126,6 @@ fn main() {
         .file("src/glsl/opt_vectorize.cpp")
         .file("src/glsl/s_expression.cpp")
         .file("src/glsl/standalone_scaffolding.cpp")
-        .file("src/glsl/strtod.c")
         .compile("glsl_optimizer");
 
     let bindings = bindgen::Builder::default()
