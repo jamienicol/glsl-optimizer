@@ -76,3 +76,6 @@ glsl_compiler
 
 build
 metalTemp.metal
+
+Cargo.lock
+target/
