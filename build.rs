@@ -6,6 +6,8 @@ use std::env;
 
 fn main() {
     cc::Build::new()
+        .warnings(false)
+        .extra_warnings(false)
         .include("include")
         .include("src")
         .include("src/mesa")
@@ -18,6 +20,8 @@ fn main() {
         .compile("glcpp-library");
 
     cc::Build::new()
+        .warnings(false)
+        .extra_warnings(false)
         .include("include")
         .include("src")
         .include("src/mesa")
@@ -28,6 +32,8 @@ fn main() {
 
     cc::Build::new()
         .cpp(true)
+        .warnings(false)
+        .extra_warnings(false)
         .include("include")
         .include("src")
         .include("src/mesa")
