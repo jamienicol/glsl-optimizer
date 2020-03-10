@@ -5,6 +5,29 @@ use std::path::PathBuf;
 use std::env;
 
 fn main() {
+    let host = env::var("HOST").unwrap();
+    let target = env::var("TARGET").unwrap();
+    assert_eq!(host, target, "glslopt should always be built as a build dependency");
+
+    println!("{}", "begin env");
+    for (key, value) in env::vars() {
+        println!("{}: {}", key, value);
+    }
+    println!("{}", "end env");
+
+    // Unset CFLAGS as they are probably intended for a target build,
+    // so may break building this as a build dependency.
+    env::remove_var(format!("CFLAGS_{}", &target));
+    env::remove_var(format!("CXXFLAGS_{}", &target));
+    env::remove_var(format!("CFLAGS_{}", target.replace("-", "_")));
+    env::remove_var(format!("CXXFLAGS_{}", target.replace("-", "_")));
+    env::remove_var("CFLAGS");
+    env::remove_var("CXXFLAGS");
+
+    // This has been set to override --target= to help windows cross builds,
+    // but breaks this building as a build dependency.
+    env::remove_var("BINDGEN_EXTRA_CLANG_ARGS");
+
     cc::Build::new()
         .warnings(false)
         .extra_warnings(false)
