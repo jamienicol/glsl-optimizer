@@ -82,6 +82,17 @@ impl Shader {
             }
         }
     }
+
+    pub fn get_log(&self) -> &str {
+        unsafe {
+            let cstr = sys::glslopt_get_log(self.shader);
+            if cstr == ptr::null() {
+                ""
+            } else {
+                CStr::from_ptr(cstr).to_str().unwrap()
+            }
+        }
+    }
 }
 
 impl Drop for Shader {
