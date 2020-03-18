@@ -28,9 +28,14 @@ fn main() {
     // but breaks this building as a build dependency.
     env::remove_var("BINDGEN_EXTRA_CLANG_ARGS");
 
+    // Optimized glslopt builds seem to produce incorrect shader code.
+    // (Missing the default case in switch statements, for example.)
+    let opt_level = 0;
+
     cc::Build::new()
         .warnings(false)
         .extra_warnings(false)
+        .opt_level(opt_level)
         .include("include")
         .include("src")
         .include("src/mesa")
@@ -45,6 +50,7 @@ fn main() {
     cc::Build::new()
         .warnings(false)
         .extra_warnings(false)
+        .opt_level(opt_level)
         .include("include")
         .include("src")
         .include("src/mesa")
@@ -57,6 +63,7 @@ fn main() {
         .cpp(true)
         .warnings(false)
         .extra_warnings(false)
+        .opt_level(opt_level)
         .include("include")
         .include("src")
         .include("src/mesa")
