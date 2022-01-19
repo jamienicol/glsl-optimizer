@@ -389,6 +389,54 @@
       }
       break;
 
+   case ir_unop_i2i:
+      for (unsigned c = 0; c < op[0]->type->components(); c++) {
+         switch (op[0]->type->base_type) {
+         case GLSL_TYPE_INT:
+            data.i[c] = op[0]->value.i[c];
+            break;
+         default:
+            unreachable("invalid type");
+         }
+      }
+      break;
+
+   case ir_unop_i2imp:
+      for (unsigned c = 0; c < op[0]->type->components(); c++) {
+         switch (op[0]->type->base_type) {
+         case GLSL_TYPE_INT:
+            data.i[c] = op[0]->value.i[c];
+            break;
+         default:
+            unreachable("invalid type");
+         }
+      }
+      break;
+
+   case ir_unop_u2u:
+      for (unsigned c = 0; c < op[0]->type->components(); c++) {
+         switch (op[0]->type->base_type) {
+         case GLSL_TYPE_UINT:
+            data.u[c] = op[0]->value.u[c];
+            break;
+         default:
+            unreachable("invalid type");
+         }
+      }
+      break;
+
+   case ir_unop_u2ump:
+      for (unsigned c = 0; c < op[0]->type->components(); c++) {
+         switch (op[0]->type->base_type) {
+         case GLSL_TYPE_UINT:
+            data.u[c] = op[0]->value.u[c];
+            break;
+         default:
+            unreachable("invalid type");
+         }
+      }
+      break;
+
    case ir_unop_d2i:
       for (unsigned c = 0; c < op[0]->type->components(); c++) {
          switch (op[0]->type->base_type) {
@@ -1943,7 +1991,7 @@
 
       unsigned c2_inc = op[2]->type->is_scalar() ? 0 : 1;
       for (unsigned c = 0, c2 = 0; c < components; c2 += c2_inc, c++) {
-         switch (this->type->base_type) {
+         switch (return_type->base_type) {
          case GLSL_TYPE_FLOAT:
             data.f[c] = op[0]->value.f[c] * (1.0f - op[2]->value.f[c2]) + (op[1]->value.f[c] * op[2]->value.f[c2]);
             break;
@@ -1959,7 +2007,7 @@
 
    case ir_triop_csel:
       for (unsigned c = 0; c < components; c++) {
-         switch (this->type->base_type) {
+         switch (return_type->base_type) {
          case GLSL_TYPE_UINT:
             data.u[c] = op[0]->value.b[c] ? op[1]->value.u[c] : op[2]->value.u[c];
             break;
@@ -2007,7 +2055,7 @@
 
       memcpy(&data, &op[0]->value, sizeof(data));
 
-      switch (this->type->base_type) {
+      switch (return_type->base_type) {
       case GLSL_TYPE_UINT:
          data.u[idx] = op[1]->value.u[0];
          break;
@@ -2051,8 +2099,8 @@
       break;
 
    case ir_quadop_vector:
-      for (unsigned c = 0; c < this->type->vector_elements; c++) {
-         switch (this->type->base_type) {
+      for (unsigned c = 0; c < return_type->vector_elements; c++) {
+         switch (return_type->base_type) {
          case GLSL_TYPE_UINT:
             data.u[c] = op[c]->value.u[0];
             break;

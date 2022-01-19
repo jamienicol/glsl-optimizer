@@ -7,3 +7,7 @@ bison -v -o "src/compiler/glsl/glsl_parser.cpp" -p "_mesa_glsl_" --defines=src/c
 python "src/compiler/glsl/ir_expression_operation.py" "enum" >src/compiler/glsl/ir_expression_operation.h
 python "src/compiler/glsl/ir_expression_operation.py" "strings" >src/compiler/glsl/ir_expression_operation_strings.h
 python "src/compiler/glsl/ir_expression_operation.py" "constant" >src/compiler/glsl/ir_expression_operation_constant.h
+
+python src/util/format_srgb.py >src/util/format_srgb.c
+python src/util/format/u_format_table.py src/util/format/u_format.csv --header >src/util/format/u_format_pack.h
+python src/util/format/u_format_table.py src/util/format/u_format.csv >src/util/format/u_format_table.c

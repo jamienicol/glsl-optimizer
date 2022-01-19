@@ -1,5 +1,5 @@
 /*
- * Copyright © 2009,2012 Intel Corporation
+ * Copyright © 2014 Red Hat
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -20,42 +20,20 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
  * IN THE SOFTWARE.
  *
- * Authors:
- *    Eric Anholt <eric@anholt.net>
- *
  */
 
-#ifndef _FNV1A_H
-#define _FNV1A_H
+#ifndef _RGTC_H
+#define _RGTC_H
 
-enum {
-   _mesa_fnv32_1a_offset_bias = 2166136261u,
-};
+void util_format_unsigned_fetch_texel_rgtc(unsigned srcRowStride, const unsigned char *pixdata,
+                                           unsigned i, unsigned j, unsigned char *value, unsigned comps);
 
-/**
- * Quick FNV-1a hash implementation based on:
- * http://www.isthe.com/chongo/tech/comp/fnv/
- *
- * FNV-1a is not be the best hash out there -- Jenkins's lookup3 is supposed
- * to be quite good, and it probably beats FNV.  But FNV has the advantage
- * that it involves almost no code.  For an improvement on both, see Paul
- * Hsieh's http://www.azillionmonkeys.com/qed/hash.html
- */
-static inline uint32_t
-_mesa_fnv32_1a_accumulate_block(uint32_t hash, const void *data, size_t size)
-{
-   const uint8_t *bytes = (const uint8_t *)data;
+void util_format_signed_fetch_texel_rgtc(unsigned srcRowStride, const signed char *pixdata,
+                                           unsigned i, unsigned j, signed char *value, unsigned comps);
 
-   while (size-- != 0) {
-      hash ^= *bytes;
-      hash = hash * 0x01000193;
-      bytes++;
-   }
+void util_format_unsigned_encode_rgtc_ubyte(unsigned char *blkaddr, unsigned char srccolors[4][4],
+                                            int numxpixels, int numypixels);
 
-   return hash;
-}
-
-#define _mesa_fnv32_1a_accumulate(hash, expr) \
-   _mesa_fnv32_1a_accumulate_block(hash, &(expr), sizeof(expr))
-
-#endif
+void util_format_signed_encode_rgtc_ubyte(signed char *blkaddr, signed char srccolors[4][4],
+                                            int numxpixels, int numypixels);
+#endif /* _RGTC_H */

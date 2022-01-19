@@ -27,6 +27,7 @@
 #define IR_PRINT_GLSL_VISITOR_H
 
 #include "ir.h"
+#include "util/u_printf.h"
 
 enum PrintGlslMode {
 	kPrintGlslNone = 0,
@@ -78,7 +79,7 @@ public:
 	{
 		assert (m_Ptr != NULL);
 		
-		size_t new_length = printf_length(fmt, args);
+		size_t new_length = u_printf_length(fmt, args);
 		size_t needed_length = m_Size + new_length + 1;
 		
 		if (m_Capacity < needed_length)

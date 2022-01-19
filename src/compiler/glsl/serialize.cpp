@@ -139,10 +139,10 @@ write_buffer_blocks(struct blob *metadata, struct gl_shader_program *prog)
 
       struct gl_program *glprog = sh->Program;
 
-      blob_write_uint32(metadata, glprog->info.num_ubos);
+      blob_write_uint32(metadata, glprog->sh.NumUniformBlocks);
       blob_write_uint32(metadata, glprog->info.num_ssbos);
 
-      for (unsigned j = 0; j < glprog->info.num_ubos; j++) {
+      for (unsigned j = 0; j < glprog->sh.NumUniformBlocks; j++) {
          uint32_t offset =
             glprog->sh.UniformBlocks[j] - prog->data->UniformBlocks;
          blob_write_uint32(metadata, offset);
@@ -215,15 +215,15 @@ read_buffer_blocks(struct blob_reader *metadata,
 
       struct gl_program *glprog = sh->Program;
 
-      glprog->info.num_ubos = blob_read_uint32(metadata);
+      glprog->sh.NumUniformBlocks = blob_read_uint32(metadata);
       glprog->info.num_ssbos = blob_read_uint32(metadata);
 
       glprog->sh.UniformBlocks =
-         rzalloc_array(glprog, gl_uniform_block *, glprog->info.num_ubos);
+         rzalloc_array(glprog, gl_uniform_block *, glprog->sh.NumUniformBlocks);
       glprog->sh.ShaderStorageBlocks =
          rzalloc_array(glprog, gl_uniform_block *, glprog->info.num_ssbos);
 
-      for (unsigned j = 0; j < glprog->info.num_ubos; j++) {
+      for (unsigned j = 0; j < glprog->sh.NumUniformBlocks; j++) {
          uint32_t offset = blob_read_uint32(metadata);
          glprog->sh.UniformBlocks[j] = prog->data->UniformBlocks + offset;
       }
@@ -1044,6 +1044,9 @@ write_shader_parameters(struct blob *metadata,
                     sizeof(gl_constant_value) * params->NumParameterValues);
 
    blob_write_uint32(metadata, params->StateFlags);
+   blob_write_uint32(metadata, params->UniformBytes);
+   blob_write_uint32(metadata, params->FirstStateVarIndex);
+   blob_write_uint32(metadata, params->LastStateVarIndex);
 }
 
 static void
@@ -1054,7 +1057,7 @@ read_shader_parameters(struct blob_reader *metadata,
    uint32_t i = 0;
    uint32_t num_parameters = blob_read_uint32(metadata);
 
-   _mesa_reserve_parameter_storage(params, num_parameters);
+   _mesa_reserve_parameter_storage(params, num_parameters, num_parameters);
    while (i < num_parameters) {
       gl_register_file type = (gl_register_file) blob_read_uint32(metadata);
       const char *name = blob_read_string(metadata);
@@ -1078,6 +1081,9 @@ read_shader_parameters(struct blob_reader *metadata,
                    sizeof(gl_constant_value) * params->NumParameterValues);
 
    params->StateFlags = blob_read_uint32(metadata);
+   params->UniformBytes = blob_read_uint32(metadata);
+   params->FirstStateVarIndex = blob_read_uint32(metadata);
+   params->LastStateVarIndex = blob_read_uint32(metadata);
 }
 
 static void
@@ -1120,9 +1126,6 @@ write_shader_metadata(struct blob *metadata, gl_linked_shader *shader)
       blob_write_bytes(metadata, &glprog->sh.BindlessImages[i],
                        sizeof(struct gl_bindless_image) - ptr_size);
    }
-
-   blob_write_bytes(metadata, &glprog->sh.fs.BlendSupport,
-                    sizeof(glprog->sh.fs.BlendSupport));
 
    write_shader_parameters(metadata, glprog->Parameters);
 
@@ -1187,9 +1190,6 @@ read_shader_metadata(struct blob_reader *metadata,
                         sizeof(struct gl_bindless_image) - ptr_size);
       }
    }
-
-   blob_copy_bytes(metadata, (uint8_t *) &glprog->sh.fs.BlendSupport,
-                   sizeof(glprog->sh.fs.BlendSupport));
 
    glprog->Parameters = _mesa_new_parameter_list();
    read_shader_parameters(metadata, glprog->Parameters);

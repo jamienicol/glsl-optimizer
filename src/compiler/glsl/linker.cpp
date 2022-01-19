@@ -321,6 +321,39 @@ public:
    }
 };
 
+class array_length_to_const_visitor : public ir_rvalue_visitor {
+public:
+   array_length_to_const_visitor()
+   {
+      this->progress = false;
+   }
+
+   virtual ~array_length_to_const_visitor()
+   {
+      /* empty */
+   }
+
+   bool progress;
+
+   virtual void handle_rvalue(ir_rvalue **rvalue)
+   {
+      if (*rvalue == NULL || (*rvalue)->ir_type != ir_type_expression)
+         return;
+
+      ir_expression *expr = (*rvalue)->as_expression();
+      if (expr) {
+         if (expr->operation == ir_unop_implicitly_sized_array_length) {
+            assert(!expr->operands[0]->type->is_unsized_array());
+            ir_constant *constant = new(expr)
+               ir_constant(expr->operands[0]->type->array_size());
+            if (constant) {
+               *rvalue = constant;
+            }
+         }
+      }
+   }
+};
+
 /**
  * Visitor that determines the highest stream id to which a (geometry) shader
  * emits vertices. It also checks whether End{Stream}Primitive is ever called.
@@ -332,7 +365,7 @@ public:
         invalid_stream_id(0),
         invalid_stream_id_from_emit_vertex(false),
         end_primitive_found(false),
-        uses_non_zero_stream(false)
+        used_streams(0)
    {
       /* empty */
    }
@@ -353,8 +386,7 @@ public:
          return visit_stop;
       }
 
-      if (stream_id != 0)
-         uses_non_zero_stream = true;
+      used_streams |= 1 << stream_id;
 
       return visit_continue;
    }
@@ -377,8 +409,7 @@ public:
          return visit_stop;
       }
 
-      if (stream_id != 0)
-         uses_non_zero_stream = true;
+      used_streams |= 1 << stream_id;
 
       return visit_continue;
    }
@@ -399,9 +430,9 @@ public:
       return invalid_stream_id;
    }
 
-   bool uses_streams()
+   unsigned active_stream_mask()
    {
-      return uses_non_zero_stream;
+      return used_streams;
    }
 
    bool uses_end_primitive()
@@ -414,7 +445,7 @@ private:
    int invalid_stream_id;
    bool invalid_stream_id_from_emit_vertex;
    bool end_primitive_found;
-   bool uses_non_zero_stream;
+   unsigned used_streams;
 };
 
 /* Class that finds array derefs and check if indexes are dynamic. */
@@ -500,6 +531,7 @@ linker_warning(gl_shader_program *prog, const char *fmt, ...)
  */
 long
 parse_program_resource_name(const GLchar *name,
+                            const size_t len,
                             const GLchar **out_base_name_end)
 {
    /* Section 7.3.1 ("Program Interfaces") of the OpenGL 4.3 spec says:
@@ -510,7 +542,6 @@ parse_program_resource_name(const GLchar *name,
     *     string will not include white space anywhere in the string."
     */
 
-   const size_t len = strlen(name);
    *out_base_name_end = name + len;
 
    if (len == 0 || name[len-1] != ']')
@@ -811,7 +842,7 @@ validate_geometry_shader_emissions(struct gl_context *ctx,
                       emit_vertex.error_stream(),
                       ctx->Const.MaxVertexStreams - 1);
       }
-      prog->Geom.UsesStreams = emit_vertex.uses_streams();
+      prog->Geom.ActiveStreamMask = emit_vertex.active_stream_mask();
       prog->Geom.UsesEndPrimitive = emit_vertex.uses_end_primitive();
 
       /* From the ARB_gpu_shader5 spec:
@@ -834,11 +865,11 @@ validate_geometry_shader_emissions(struct gl_context *ctx,
        * Since we can call EmitVertex() and EndPrimitive() when we output
        * primitives other than points, calling EmitStreamVertex(0) or
        * EmitEndPrimitive(0) should not produce errors. This it also what Nvidia
-       * does. Currently we only set prog->Geom.UsesStreams to TRUE when
-       * EmitStreamVertex() or EmitEndPrimitive() are called with a non-zero
+       * does. We can use prog->Geom.ActiveStreamMask to check whether only the
+       * first (zero) stream is active.
        * stream.
        */
-      if (prog->Geom.UsesStreams &&
+      if (prog->Geom.ActiveStreamMask & ~(1 << 0) &&
           sh->Program->info.gs.output_primitive != GL_POINTS) {
          linker_error(prog, "EmitStreamVertex(n) and EndStreamPrimitive(n) "
                       "with n>0 requires point output\n");
@@ -1064,9 +1095,13 @@ cross_validate_globals(struct gl_context *ctx, struct gl_shader_program *prog,
           * no vendor actually implemented that behavior.  The 4.20
           * behavior matches the implemented behavior of at least one other
           * vendor, so we'll implement that for all GLSL versions.
+          * If (at least) one of these constant expressions is implicit,
+          * because it was added by glsl_zero_init, we skip the verification.
           */
          if (var->constant_initializer != NULL) {
-            if (existing->constant_initializer != NULL) {
+            if (existing->constant_initializer != NULL &&
+                !existing->data.is_implicit_initializer &&
+                !var->data.is_implicit_initializer) {
                if (!var->constant_initializer->has_value(existing->constant_initializer)) {
                   linker_error(prog, "initializers for %s "
                                "`%s' have differing values\n",
@@ -1078,7 +1113,8 @@ cross_validate_globals(struct gl_context *ctx, struct gl_shader_program *prog,
                 * not have an initializer but a later instance does,
                 * replace the former with the later.
                 */
-               variables->replace_variable(existing->name, var);
+               if (!var->data.is_implicit_initializer)
+                  variables->replace_variable(existing->name, var);
             }
          }
 
@@ -1197,7 +1233,7 @@ static bool
 interstage_cross_validate_uniform_blocks(struct gl_shader_program *prog,
                                          bool validate_ssbo)
 {
-   int *InterfaceBlockStageIndex[MESA_SHADER_STAGES];
+   int *ifc_blk_stage_idx[MESA_SHADER_STAGES];
    struct gl_uniform_block *blks = NULL;
    unsigned *num_blks = validate_ssbo ? &prog->data->NumShaderStorageBlocks :
       &prog->data->NumUniformBlocks;
@@ -1218,9 +1254,10 @@ interstage_cross_validate_uniform_blocks(struct gl_shader_program *prog,
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       struct gl_linked_shader *sh = prog->_LinkedShaders[i];
 
-      InterfaceBlockStageIndex[i] = new int[max_num_buffer_blocks];
+      ifc_blk_stage_idx[i] =
+         (int *) malloc(sizeof(int) * max_num_buffer_blocks);
       for (unsigned int j = 0; j < max_num_buffer_blocks; j++)
-         InterfaceBlockStageIndex[i][j] = -1;
+         ifc_blk_stage_idx[i][j] = -1;
 
       if (sh == NULL)
          continue;
@@ -1244,7 +1281,7 @@ interstage_cross_validate_uniform_blocks(struct gl_shader_program *prog,
                          "definitions\n", sh_blks[j]->Name);
 
             for (unsigned k = 0; k <= i; k++) {
-               delete[] InterfaceBlockStageIndex[k];
+               free(ifc_blk_stage_idx[k]);
             }
 
             /* Reset the block count. This will help avoid various segfaults
@@ -1255,7 +1292,7 @@ interstage_cross_validate_uniform_blocks(struct gl_shader_program *prog,
             return false;
          }
 
-         InterfaceBlockStageIndex[i][index] = j;
+         ifc_blk_stage_idx[i][index] = j;
       }
    }
 
@@ -1264,7 +1301,7 @@ interstage_cross_validate_uniform_blocks(struct gl_shader_program *prog,
     */
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       for (unsigned j = 0; j < *num_blks; j++) {
-         int stage_index = InterfaceBlockStageIndex[i][j];
+         int stage_index = ifc_blk_stage_idx[i][j];
 
          if (stage_index != -1) {
             struct gl_linked_shader *sh = prog->_LinkedShaders[i];
@@ -1280,7 +1317,7 @@ interstage_cross_validate_uniform_blocks(struct gl_shader_program *prog,
    }
 
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
-      delete[] InterfaceBlockStageIndex[i];
+      free(ifc_blk_stage_idx[i]);
    }
 
    if (validate_ssbo)
@@ -2094,7 +2131,7 @@ link_fs_inout_layout_qualifiers(struct gl_shader_program *prog,
          shader->SampleInterlockOrdered;
       linked_shader->Program->info.fs.sample_interlock_unordered |=
          shader->SampleInterlockUnordered;
-      linked_shader->Program->sh.fs.BlendSupport |= shader->BlendSupport;
+      linked_shader->Program->info.fs.advanced_blend_modes |= shader->BlendSupport;
    }
 
    linked_shader->Program->info.fs.pixel_center_integer = pixel_center_integer;
@@ -2232,9 +2269,9 @@ link_cs_input_layout_qualifiers(struct gl_shader_program *prog,
       return;
 
    for (int i = 0; i < 3; i++)
-      gl_prog->info.cs.local_size[i] = 0;
+      gl_prog->info.workgroup_size[i] = 0;
 
-   gl_prog->info.cs.local_size_variable = false;
+   gl_prog->info.workgroup_size_variable = false;
 
    gl_prog->info.cs.derivative_group = DERIVATIVE_GROUP_NONE;
 
@@ -2252,9 +2289,9 @@ link_cs_input_layout_qualifiers(struct gl_shader_program *prog,
       struct gl_shader *shader = shader_list[sh];
 
       if (shader->info.Comp.LocalSize[0] != 0) {
-         if (gl_prog->info.cs.local_size[0] != 0) {
+         if (gl_prog->info.workgroup_size[0] != 0) {
             for (int i = 0; i < 3; i++) {
-               if (gl_prog->info.cs.local_size[i] !=
+               if (gl_prog->info.workgroup_size[i] !=
                    shader->info.Comp.LocalSize[i]) {
                   linker_error(prog, "compute shader defined with conflicting "
                                "local sizes\n");
@@ -2263,11 +2300,11 @@ link_cs_input_layout_qualifiers(struct gl_shader_program *prog,
             }
          }
          for (int i = 0; i < 3; i++) {
-            gl_prog->info.cs.local_size[i] =
+            gl_prog->info.workgroup_size[i] =
                shader->info.Comp.LocalSize[i];
          }
       } else if (shader->info.Comp.LocalSizeVariable) {
-         if (gl_prog->info.cs.local_size[0] != 0) {
+         if (gl_prog->info.workgroup_size[0] != 0) {
             /* The ARB_compute_variable_group_size spec says:
              *
              *     If one compute shader attached to a program declares a
@@ -2279,7 +2316,7 @@ link_cs_input_layout_qualifiers(struct gl_shader_program *prog,
                          "variable local group size\n");
             return;
          }
-         gl_prog->info.cs.local_size_variable = true;
+         gl_prog->info.workgroup_size_variable = true;
       }
 
       enum gl_derivative_group group = shader->info.Comp.DerivativeGroup;
@@ -2298,30 +2335,30 @@ link_cs_input_layout_qualifiers(struct gl_shader_program *prog,
     * since we already know we're in the right type of shader program
     * for doing it.
     */
-   if (gl_prog->info.cs.local_size[0] == 0 &&
-       !gl_prog->info.cs.local_size_variable) {
+   if (gl_prog->info.workgroup_size[0] == 0 &&
+       !gl_prog->info.workgroup_size_variable) {
       linker_error(prog, "compute shader must contain a fixed or a variable "
                          "local group size\n");
       return;
    }
 
    if (gl_prog->info.cs.derivative_group == DERIVATIVE_GROUP_QUADS) {
-      if (gl_prog->info.cs.local_size[0] % 2 != 0) {
+      if (gl_prog->info.workgroup_size[0] % 2 != 0) {
          linker_error(prog, "derivative_group_quadsNV must be used with a "
                       "local group size whose first dimension "
                       "is a multiple of 2\n");
          return;
       }
-      if (gl_prog->info.cs.local_size[1] % 2 != 0) {
+      if (gl_prog->info.workgroup_size[1] % 2 != 0) {
          linker_error(prog, "derivative_group_quadsNV must be used with a local"
                       "group size whose second dimension "
                       "is a multiple of 2\n");
          return;
       }
    } else if (gl_prog->info.cs.derivative_group == DERIVATIVE_GROUP_LINEAR) {
-      if ((gl_prog->info.cs.local_size[0] *
-           gl_prog->info.cs.local_size[1] *
-           gl_prog->info.cs.local_size[2]) % 4 != 0) {
+      if ((gl_prog->info.workgroup_size[0] *
+           gl_prog->info.workgroup_size[1] *
+           gl_prog->info.workgroup_size[2]) % 4 != 0) {
          linker_error(prog, "derivative_group_linearNV must be used with a "
                       "local group size whose total number of invocations "
                       "is a multiple of 4\n");
@@ -2541,6 +2578,12 @@ link_intrastage_shaders(void *mem_ctx,
    v.run(linked->ir);
    v.fixup_unnamed_interface_types();
 
+   /* Now that we know the sizes of all the arrays, we can replace .length()
+    * calls with a constant expression.
+    */
+   array_length_to_const_visitor len_v;
+   len_v.run(linked->ir);
+
    /* Link up uniform blocks defined within this stage. */
    link_uniform_blocks(mem_ctx, ctx, prog, linked, &ubo_blocks,
                        &num_ubo_blocks, &ssbo_blocks, &num_ssbo_blocks);
@@ -2573,6 +2616,7 @@ link_intrastage_shaders(void *mem_ctx,
    for (unsigned i = 0; i < num_ubo_blocks; i++) {
       linked->Program->sh.UniformBlocks[i] = &ubo_blocks[i];
    }
+   linked->Program->sh.NumUniformBlocks = num_ubo_blocks;
    linked->Program->info.num_ubos = num_ubo_blocks;
 
    /* Copy ssbo blocks to linked shader list */
@@ -3865,7 +3909,7 @@ add_shader_variable(const struct gl_context *ctx,
          }
          return true;
       }
-      /* fallthrough */
+      FALLTHROUGH;
    }
 
    default: {
@@ -4443,21 +4487,20 @@ static void
 link_and_validate_uniforms(struct gl_context *ctx,
                            struct gl_shader_program *prog)
 {
+   assert(!ctx->Const.UseNIRGLSLLinker);
+
    update_array_sizes(prog);
+   link_assign_uniform_locations(prog, ctx);
 
-   if (!ctx->Const.UseNIRGLSLLinker) {
-      link_assign_uniform_locations(prog, ctx);
+   if (prog->data->LinkStatus == LINKING_FAILURE)
+      return;
 
-      if (prog->data->LinkStatus == LINKING_FAILURE)
-         return;
-
-      link_util_calculate_subroutine_compat(prog);
-      link_util_check_uniform_resources(ctx, prog);
-      link_util_check_subroutine_resources(prog);
-      check_image_resources(ctx, prog);
-      link_assign_atomic_counter_resources(ctx, prog);
-      link_check_atomic_counter_resources(ctx, prog);
-   }
+   link_util_calculate_subroutine_compat(prog);
+   link_util_check_uniform_resources(ctx, prog);
+   link_util_check_subroutine_resources(prog);
+   check_image_resources(ctx, prog);
+   link_assign_atomic_counter_resources(ctx, prog);
+   link_check_atomic_counter_resources(ctx, prog);
 }
 
 static bool
@@ -4504,7 +4547,8 @@ link_varyings_and_uniforms(unsigned first, unsigned last,
    if (!link_varyings(prog, first, last, ctx, mem_ctx))
       return false;
 
-   link_and_validate_uniforms(ctx, prog);
+   if (!ctx->Const.UseNIRGLSLLinker)
+      link_and_validate_uniforms(ctx, prog);
 
    if (!prog->data->LinkStatus)
       return false;

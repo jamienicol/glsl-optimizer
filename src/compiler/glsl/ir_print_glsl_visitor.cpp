@@ -280,8 +280,8 @@ _mesa_print_ir_glsl(exec_list *instructions,
 			str.asprintf_append ("#extension GL_ARB_shader_storage_buffer_object : enable\n");
 
 
-		// TODO: support other blend specifiers besides "all"
-		if (state->fs_blend_support == BLEND_ALL)
+		// TODO: support more specific blends than all_equations
+		if (state->fs_blend_support != BLEND_NONE)
 			str.asprintf_append ("layout(blend_support_all_equations) out;\n");
 	}
 

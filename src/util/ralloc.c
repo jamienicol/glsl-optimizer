@@ -28,21 +28,11 @@
 #include <string.h>
 #include <stdint.h>
 
-/* Some versions of MinGW are missing _vscprintf's declaration, although they
- * still provide the symbol in the import library. */
-#ifdef __MINGW32__
-_CRTIMP int _vscprintf(const char *format, va_list argptr);
-#endif
+#include "util/macros.h"
+#include "util/u_math.h"
+#include "util/u_printf.h"
 
 #include "ralloc.h"
-
-#ifndef va_copy
-#ifdef __va_copy
-#define va_copy(dest, src) __va_copy((dest), (src))
-#else
-#define va_copy(dest, src) (dest) = (src)
-#endif
-#endif
 
 #define CANARY 0x5A1106
 
@@ -120,7 +110,15 @@ ralloc_context(const void *ctx)
 void *
 ralloc_size(const void *ctx, size_t size)
 {
-   void *block = malloc(size + sizeof(ralloc_header));
+   /* Some malloc allocation doesn't always align to 16 bytes even on 64 bits
+    * system, from Android bionic/tests/malloc_test.cpp:
+    *  - Allocations of a size that rounds up to a multiple of 16 bytes
+    *    must have at least 16 byte alignment.
+    *  - Allocations of a size that rounds up to a multiple of 8 bytes and
+    *    not 16 bytes, are only required to have at least 8 byte alignment.
+    */
+   void *block = malloc(align64(size + sizeof(ralloc_header),
+                                alignof(ralloc_header)));
    ralloc_header *info;
    ralloc_header *parent;
 
@@ -167,7 +165,8 @@ resize(void *ptr, size_t size)
    ralloc_header *child, *old, *info;
 
    old = get_header(ptr);
-   info = realloc(old, size + sizeof(ralloc_header));
+   info = realloc(old, align64(size + sizeof(ralloc_header),
+                               alignof(ralloc_header)));
 
    if (info == NULL)
       return NULL;
@@ -462,36 +461,10 @@ ralloc_asprintf(const void *ctx, const char *fmt, ...)
    return ptr;
 }
 
-size_t
-printf_length(const char *fmt, va_list untouched_args)
-{
-   int size;
-   char junk;
-
-   /* Make a copy of the va_list so the original caller can still use it */
-   va_list args;
-   va_copy(args, untouched_args);
-
-#ifdef _WIN32
-   /* We need to use _vcsprintf to calculate the size as vsnprintf returns -1
-    * if the number of characters to write is greater than count.
-    */
-   size = _vscprintf(fmt, args);
-   (void)junk;
-#else
-   size = vsnprintf(&junk, 1, fmt, args);
-#endif
-   assert(size >= 0);
-
-   va_end(args);
-
-   return size;
-}
-
 char *
 ralloc_vasprintf(const void *ctx, const char *fmt, va_list args)
 {
-   size_t size = printf_length(fmt, args) + 1;
+   size_t size = u_printf_length(fmt, args) + 1;
 
    char *ptr = ralloc_size(ctx, size);
    if (ptr != NULL)
@@ -547,7 +520,7 @@ ralloc_vasprintf_rewrite_tail(char **str, size_t *start, const char *fmt,
       return true;
    }
 
-   new_length = printf_length(fmt, args);
+   new_length = u_printf_length(fmt, args);
 
    ptr = resize(*str, *start + new_length + 1);
    if (unlikely(ptr == NULL))
@@ -826,7 +799,7 @@ linear_asprintf(void *parent, const char *fmt, ...)
 char *
 linear_vasprintf(void *parent, const char *fmt, va_list args)
 {
-   unsigned size = printf_length(fmt, args) + 1;
+   unsigned size = u_printf_length(fmt, args) + 1;
 
    char *ptr = linear_alloc_child(parent, size);
    if (ptr != NULL)
@@ -882,7 +855,7 @@ linear_vasprintf_rewrite_tail(void *parent, char **str, size_t *start,
       return true;
    }
 
-   new_length = printf_length(fmt, args);
+   new_length = u_printf_length(fmt, args);
 
    ptr = linear_realloc(parent, *str, *start + new_length + 1);
    if (unlikely(ptr == NULL))

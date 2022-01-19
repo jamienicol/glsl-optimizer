@@ -385,6 +385,8 @@ typedef enum pipe_format mesa_format;
 #define MESA_FORMAT_A2R10G10B10_UNORM            PIPE_FORMAT_A2R10G10B10_UNORM
 #define MESA_FORMAT_YCBCR                        PIPE_FORMAT_UYVY
 #define MESA_FORMAT_YCBCR_REV                    PIPE_FORMAT_YUYV
+#define MESA_FORMAT_RG_RB_UNORM8                 PIPE_FORMAT_R8G8_R8B8_UNORM
+#define MESA_FORMAT_GR_BR_UNORM8                 PIPE_FORMAT_G8R8_B8R8_UNORM
 #define MESA_FORMAT_A_UNORM8                     PIPE_FORMAT_A8_UNORM
 #define MESA_FORMAT_A_UNORM16                    PIPE_FORMAT_A16_UNORM
 #define MESA_FORMAT_L_UNORM8                     PIPE_FORMAT_L8_UNORM
@@ -432,6 +434,7 @@ typedef enum pipe_format mesa_format;
 #define MESA_FORMAT_R8G8B8X8_SRGB                PIPE_FORMAT_RGBX8888_SRGB
 #define MESA_FORMAT_X8B8G8R8_SRGB                PIPE_FORMAT_XBGR8888_SRGB
 #define MESA_FORMAT_R_SRGB8                      PIPE_FORMAT_R8_SRGB
+#define MESA_FORMAT_RG_SRGB8                     PIPE_FORMAT_R8G8_SRGB
 #define MESA_FORMAT_L_SRGB8                      PIPE_FORMAT_L8_SRGB
 #define MESA_FORMAT_LA_SRGB8                     PIPE_FORMAT_L8A8_SRGB
 #define MESA_FORMAT_BGR_SRGB8                    PIPE_FORMAT_R8G8B8_SRGB

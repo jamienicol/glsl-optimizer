@@ -164,7 +164,7 @@ static bool match_layout_qualifier(const char *s1, const char *s2,
 %token INVARIANT PRECISE
 %token LOWP MEDIUMP HIGHP SUPERP PRECISION
 
-%token VERSION_TOK EXTENSION LINE COLON EOL INTERFACE OUTPUT
+%token VERSION_TOK EXTENSION LINE COLON EOL INTERFACE_TOK OUTPUT
 %token PRAGMA_DEBUG_ON PRAGMA_DEBUG_OFF
 %token PRAGMA_OPTIMIZE_ON PRAGMA_OPTIMIZE_OFF
 %token PRAGMA_WARNING_ON PRAGMA_WARNING_OFF
@@ -917,20 +917,8 @@ parameter_declarator:
    }
    | layout_qualifier type_specifier any_identifier
    {
-      if (state->allow_layout_qualifier_on_function_parameter) {
-         void *ctx = state->linalloc;
-         $$ = new(ctx) ast_parameter_declarator();
-         $$->set_location_range(@2, @3);
-         $$->type = new(ctx) ast_fully_specified_type();
-         $$->type->set_location(@2);
-         $$->type->specifier = $2;
-         $$->identifier = $3;
-         state->symbols->add_variable(new(state) ir_variable(NULL, $3, ir_var_auto));
-      } else {
-         _mesa_glsl_error(&@1, state,
-                          "is is not allowed on function parameter");
-         YYERROR;
-      }
+      _mesa_glsl_error(&@1, state, "is is not allowed on function parameter");
+      YYERROR;
    }
    | type_specifier any_identifier array_specifier
    {
@@ -1598,22 +1586,22 @@ layout_qualifier_id:
             const char *s;
             uint32_t mask;
          } map[] = {
-                 { "blend_support_multiply",       BLEND_MULTIPLY },
-                 { "blend_support_screen",         BLEND_SCREEN },
-                 { "blend_support_overlay",        BLEND_OVERLAY },
-                 { "blend_support_darken",         BLEND_DARKEN },
-                 { "blend_support_lighten",        BLEND_LIGHTEN },
-                 { "blend_support_colordodge",     BLEND_COLORDODGE },
-                 { "blend_support_colorburn",      BLEND_COLORBURN },
-                 { "blend_support_hardlight",      BLEND_HARDLIGHT },
-                 { "blend_support_softlight",      BLEND_SOFTLIGHT },
-                 { "blend_support_difference",     BLEND_DIFFERENCE },
-                 { "blend_support_exclusion",      BLEND_EXCLUSION },
-                 { "blend_support_hsl_hue",        BLEND_HSL_HUE },
-                 { "blend_support_hsl_saturation", BLEND_HSL_SATURATION },
-                 { "blend_support_hsl_color",      BLEND_HSL_COLOR },
-                 { "blend_support_hsl_luminosity", BLEND_HSL_LUMINOSITY },
-                 { "blend_support_all_equations",  BLEND_ALL },
+                 { "blend_support_multiply",       BITFIELD_BIT(BLEND_MULTIPLY) },
+                 { "blend_support_screen",         BITFIELD_BIT(BLEND_SCREEN) },
+                 { "blend_support_overlay",        BITFIELD_BIT(BLEND_OVERLAY) },
+                 { "blend_support_darken",         BITFIELD_BIT(BLEND_DARKEN) },
+                 { "blend_support_lighten",        BITFIELD_BIT(BLEND_LIGHTEN) },
+                 { "blend_support_colordodge",     BITFIELD_BIT(BLEND_COLORDODGE) },
+                 { "blend_support_colorburn",      BITFIELD_BIT(BLEND_COLORBURN) },
+                 { "blend_support_hardlight",      BITFIELD_BIT(BLEND_HARDLIGHT) },
+                 { "blend_support_softlight",      BITFIELD_BIT(BLEND_SOFTLIGHT) },
+                 { "blend_support_difference",     BITFIELD_BIT(BLEND_DIFFERENCE) },
+                 { "blend_support_exclusion",      BITFIELD_BIT(BLEND_EXCLUSION) },
+                 { "blend_support_hsl_hue",        BITFIELD_BIT(BLEND_HSL_HUE) },
+                 { "blend_support_hsl_saturation", BITFIELD_BIT(BLEND_HSL_SATURATION) },
+                 { "blend_support_hsl_color",      BITFIELD_BIT(BLEND_HSL_COLOR) },
+                 { "blend_support_hsl_luminosity", BITFIELD_BIT(BLEND_HSL_LUMINOSITY) },
+                 { "blend_support_all_equations",  (1u << (BLEND_HSL_LUMINOSITY + 1)) - 2 },
          };
          for (unsigned i = 0; i < ARRAY_SIZE(map); i++) {
             if (match_layout_qualifier($1, map[i].s, state) == 0) {
@@ -1875,7 +1863,7 @@ layout_qualifier_id:
              !state->EXT_geometry_shader_enable) {
             _mesa_glsl_error(& @3, state,
                              "GL_ARB_gpu_shader5 invocations "
-                             "qualifier specified", $3);
+                             "qualifier specified");
          }
       }
 
@@ -1906,11 +1894,11 @@ layout_qualifier_id:
       if ($$.flags.q.uniform && !state->has_uniform_buffer_objects()) {
          _mesa_glsl_error(& @1, state,
                           "#version 140 / GL_ARB_uniform_buffer_object "
-                          "layout qualifier `%s' is used", $1);
+                          "layout qualifier `uniform' is used");
       } else if ($$.flags.q.uniform && state->ARB_uniform_buffer_object_warn) {
          _mesa_glsl_warning(& @1, state,
                             "#version 140 / GL_ARB_uniform_buffer_object "
-                            "layout qualifier `%s' is used", $1);
+                            "layout qualifier `uniform' is used");
       }
    }
    ;
@@ -2059,9 +2047,9 @@ type_qualifier:
        * output from one shader stage will still match an input of a subsequent
        * stage without the input being declared as invariant."
        *
-       * On the desktop side, this text first appears in GLSL 4.30.
+       * On the desktop side, this text first appears in GLSL 4.20.
        */
-      if (state->is_version(430, 300) && $$.flags.q.in)
+      if (state->is_version(420, 300) && $$.flags.q.in)
          _mesa_glsl_error(&@1, state, "invariant qualifiers cannot be used with shader inputs");
    }
    | interpolation_qualifier type_qualifier
@@ -2755,7 +2743,7 @@ iteration_statement:
                                             NULL, $3, NULL, $5);
       $$->set_location_range(@1, @4);
    }
-   | DO statement WHILE '(' expression ')' ';'
+   | DO statement_no_new_scope WHILE '(' expression ')' ';'
    {
       void *ctx = state->linalloc;
       $$ = new(ctx) ast_iteration_statement(ast_iteration_statement::ast_do_while,

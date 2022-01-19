@@ -64,10 +64,10 @@
  * MinGW 4.6.3 (in Ubuntu 13.10) does not have this bug.
  * MinGW 5.3.1 (in Ubuntu 16.04) definitely has this bug.
  * MinGW 6.2.0 (in Ubuntu 16.10) definitely has this bug.
- * MinGW x.y.z - don't know.  Assume versions after 4.6.x are buggy
+ * MinGW 7.3.0 (in Ubuntu 18.04) does not have this bug.  Assume versions before 7.3.x are buggy
  */
 
-#if defined(__MINGW32__) && ((__GNUC__ * 100) + __GNUC_MINOR >= 407)
+#if defined(__MINGW32__) && ((__GNUC__ * 100) + __GNUC_MINOR < 703)
 #warning "disabling optimizations for this file to work around compiler bug"
 #pragma GCC optimize("O1")
 #endif
@@ -89,6 +89,8 @@
 #define M_PI_4f ((float) M_PI_4)
 
 using namespace ir_builder;
+
+static mtx_t builtins_lock = _MTX_INITIALIZER_NP;
 
 /**
  * Availability predicates:
@@ -122,6 +124,19 @@ gs_only(const _mesa_glsl_parse_state *state)
    return state->stage == MESA_SHADER_GEOMETRY;
 }
 
+/* For texture functions moved to compat profile in GLSL 4.20 */
+static bool
+deprecated_texture(const _mesa_glsl_parse_state *state)
+{
+   return state->compat_shader || !state->is_version(420, 0);
+}
+
+static bool
+deprecated_texture_derivatives_only(const _mesa_glsl_parse_state *state)
+{
+   return deprecated_texture(state) && derivatives_only(state);
+}
+
 static bool
 v110(const _mesa_glsl_parse_state *state)
 {
@@ -129,9 +144,15 @@ v110(const _mesa_glsl_parse_state *state)
 }
 
 static bool
-v110_derivatives_only(const _mesa_glsl_parse_state *state)
+v110_deprecated_texture(const _mesa_glsl_parse_state *state)
 {
-   return !state->es_shader &&
+   return !state->es_shader && deprecated_texture(state);
+}
+
+static bool
+v110_derivatives_only_deprecated_texture(const _mesa_glsl_parse_state *state)
+{
+   return v110_deprecated_texture(state) &&
           derivatives_only(state);
 }
 
@@ -218,9 +239,15 @@ lod_exists_in_stage(const _mesa_glsl_parse_state *state)
 }
 
 static bool
-v110_lod(const _mesa_glsl_parse_state *state)
+lod_deprecated_texture(const _mesa_glsl_parse_state *state)
 {
-   return !state->es_shader && lod_exists_in_stage(state);
+   return deprecated_texture(state) && lod_exists_in_stage(state);
+}
+
+static bool
+v110_lod_deprecated_texture(const _mesa_glsl_parse_state *state)
+{
+   return !state->es_shader && lod_deprecated_texture(state);
 }
 
 static bool
@@ -577,12 +604,6 @@ derivative_control(const _mesa_glsl_parse_state *state)
            state->ARB_derivative_control_enable);
 }
 
-static bool
-tex1d_lod(const _mesa_glsl_parse_state *state)
-{
-   return !state->es_shader && lod_exists_in_stage(state);
-}
-
 /** True if sampler3D exists */
 static bool
 tex3d(const _mesa_glsl_parse_state *state)
@@ -590,16 +611,16 @@ tex3d(const _mesa_glsl_parse_state *state)
    /* sampler3D exists in all desktop GLSL versions, GLSL ES 1.00 with the
     * OES_texture_3D extension, and in GLSL ES 3.00.
     */
-   return !state->es_shader ||
-          state->OES_texture_3D_enable ||
-          state->language_version >= 300;
+   return (!state->es_shader ||
+           state->OES_texture_3D_enable ||
+           state->language_version >= 300) && deprecated_texture(state);
 }
 
 static bool
 derivatives_tex3d(const _mesa_glsl_parse_state *state)
 {
    return (!state->es_shader || state->OES_texture_3D_enable) &&
-          derivatives_only(state);
+          derivatives_only(state) && deprecated_texture(state);
 }
 
 static bool
@@ -735,7 +756,7 @@ fp64(const _mesa_glsl_parse_state *state)
 }
 
 static bool
-int64(const _mesa_glsl_parse_state *state)
+int64_avail(const _mesa_glsl_parse_state *state)
 {
    return state->has_int64();
 }
@@ -765,6 +786,13 @@ buffer_atomics_supported(const _mesa_glsl_parse_state *state)
 }
 
 static bool
+buffer_int64_atomics_supported(const _mesa_glsl_parse_state *state)
+{
+   return state->NV_shader_atomic_int64_enable &&
+      buffer_atomics_supported(state);
+}
+
+static bool
 barrier_supported(const _mesa_glsl_parse_state *state)
 {
    return compute_shader(state) ||
@@ -778,9 +806,15 @@ vote(const _mesa_glsl_parse_state *state)
 }
 
 static bool
+vote_ext(const _mesa_glsl_parse_state *state)
+{
+   return state->EXT_shader_group_vote_enable;
+}
+
+static bool
 vote_or_v460_desktop(const _mesa_glsl_parse_state *state)
 {
-   return state->ARB_shader_group_vote_enable || v460_desktop(state);
+   return state->EXT_shader_group_vote_enable || state->ARB_shader_group_vote_enable || v460_desktop(state);
 }
 
 static bool
@@ -1247,6 +1281,7 @@ enum image_function_flags {
    IMAGE_FUNCTION_AVAIL_ATOMIC_EXCHANGE = (1 << 8),
    IMAGE_FUNCTION_AVAIL_ATOMIC_ADD = (1 << 9),
    IMAGE_FUNCTION_EXT_ONLY = (1 << 10),
+   IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE = (1 << 11),
 };
 
 } /* anonymous namespace */
@@ -1263,7 +1298,15 @@ builtin_builder::builtin_builder()
 
 builtin_builder::~builtin_builder()
 {
+   mtx_lock(&builtins_lock);
+
    ralloc_free(mem_ctx);
+   mem_ctx = NULL;
+
+   ralloc_free(shader);
+   shader = NULL;
+
+   mtx_unlock(&builtins_lock);
 }
 
 ir_function_signature *
@@ -1361,6 +1404,9 @@ builtin_builder::create_intrinsics()
                 _atomic_intrinsic2(NV_shader_atomic_float_supported,
                                    glsl_type::float_type,
                                    ir_intrinsic_generic_atomic_add),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
+                                   ir_intrinsic_generic_atomic_add),
                 _atomic_counter_intrinsic1(shader_atomic_counter_ops_or_v460_desktop,
                                            ir_intrinsic_atomic_counter_add),
                 NULL);
@@ -1373,6 +1419,12 @@ builtin_builder::create_intrinsics()
                                    ir_intrinsic_generic_atomic_min),
                 _atomic_intrinsic2(INTEL_shader_atomic_float_minmax_supported,
                                    glsl_type::float_type,
+                                   ir_intrinsic_generic_atomic_min),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::uint64_t_type,
+                                   ir_intrinsic_generic_atomic_min),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
                                    ir_intrinsic_generic_atomic_min),
                 _atomic_counter_intrinsic1(shader_atomic_counter_ops_or_v460_desktop,
                                            ir_intrinsic_atomic_counter_min),
@@ -1387,6 +1439,12 @@ builtin_builder::create_intrinsics()
                 _atomic_intrinsic2(INTEL_shader_atomic_float_minmax_supported,
                                    glsl_type::float_type,
                                    ir_intrinsic_generic_atomic_max),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::uint64_t_type,
+                                   ir_intrinsic_generic_atomic_max),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
+                                   ir_intrinsic_generic_atomic_max),
                 _atomic_counter_intrinsic1(shader_atomic_counter_ops_or_v460_desktop,
                                            ir_intrinsic_atomic_counter_max),
                 NULL);
@@ -1396,6 +1454,12 @@ builtin_builder::create_intrinsics()
                                    ir_intrinsic_generic_atomic_and),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type,
+                                   ir_intrinsic_generic_atomic_and),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::uint64_t_type,
+                                   ir_intrinsic_generic_atomic_and),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
                                    ir_intrinsic_generic_atomic_and),
                 _atomic_counter_intrinsic1(shader_atomic_counter_ops_or_v460_desktop,
                                            ir_intrinsic_atomic_counter_and),
@@ -1407,6 +1471,12 @@ builtin_builder::create_intrinsics()
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type,
                                    ir_intrinsic_generic_atomic_or),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::uint64_t_type,
+                                   ir_intrinsic_generic_atomic_or),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
+                                   ir_intrinsic_generic_atomic_or),
                 _atomic_counter_intrinsic1(shader_atomic_counter_ops_or_v460_desktop,
                                            ir_intrinsic_atomic_counter_or),
                 NULL);
@@ -1417,6 +1487,12 @@ builtin_builder::create_intrinsics()
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type,
                                    ir_intrinsic_generic_atomic_xor),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::uint64_t_type,
+                                   ir_intrinsic_generic_atomic_xor),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
+                                   ir_intrinsic_generic_atomic_xor),
                 _atomic_counter_intrinsic1(shader_atomic_counter_ops_or_v460_desktop,
                                            ir_intrinsic_atomic_counter_xor),
                 NULL);
@@ -1426,6 +1502,9 @@ builtin_builder::create_intrinsics()
                                    ir_intrinsic_generic_atomic_exchange),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type,
+                                   ir_intrinsic_generic_atomic_exchange),
+                _atomic_intrinsic2(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
                                    ir_intrinsic_generic_atomic_exchange),
                 _atomic_intrinsic2(NV_shader_atomic_float_supported,
                                    glsl_type::float_type,
@@ -1439,6 +1518,9 @@ builtin_builder::create_intrinsics()
                                    ir_intrinsic_generic_atomic_comp_swap),
                 _atomic_intrinsic3(buffer_atomics_supported,
                                    glsl_type::int_type,
+                                   ir_intrinsic_generic_atomic_comp_swap),
+                _atomic_intrinsic3(buffer_int64_atomics_supported,
+                                   glsl_type::int64_t_type,
                                    ir_intrinsic_generic_atomic_comp_swap),
                 _atomic_intrinsic3(INTEL_shader_atomic_float_minmax_supported,
                                    glsl_type::float_type,
@@ -1579,6 +1661,18 @@ builtin_builder::create_builtins()
                 _##NAME(fp64, glsl_type::dvec4_type),      \
                 NULL);
 
+#define FD130GS4(NAME)                          \
+   add_function(#NAME,                          \
+                _##NAME(v130_or_gpu_shader4, glsl_type::float_type), \
+                _##NAME(v130_or_gpu_shader4, glsl_type::vec2_type),  \
+                _##NAME(v130_or_gpu_shader4, glsl_type::vec3_type),  \
+                _##NAME(v130_or_gpu_shader4, glsl_type::vec4_type),  \
+                _##NAME(fp64, glsl_type::double_type),  \
+                _##NAME(fp64, glsl_type::dvec2_type),    \
+                _##NAME(fp64, glsl_type::dvec3_type),     \
+                _##NAME(fp64, glsl_type::dvec4_type),      \
+                NULL);
+
 #define FDGS5(NAME)                                 \
    add_function(#NAME,                          \
                 _##NAME(gpu_shader5_es, glsl_type::float_type), \
@@ -1617,10 +1711,10 @@ builtin_builder::create_builtins()
                 _##NAME(fp64, glsl_type::dvec2_type),  \
                 _##NAME(fp64, glsl_type::dvec3_type),  \
                 _##NAME(fp64, glsl_type::dvec4_type),  \
-                _##NAME(int64, glsl_type::int64_t_type), \
-                _##NAME(int64, glsl_type::i64vec2_type),  \
-                _##NAME(int64, glsl_type::i64vec3_type),  \
-                _##NAME(int64, glsl_type::i64vec4_type),  \
+                _##NAME(int64_avail, glsl_type::int64_t_type), \
+                _##NAME(int64_avail, glsl_type::i64vec2_type),  \
+                _##NAME(int64_avail, glsl_type::i64vec3_type),  \
+                _##NAME(int64_avail, glsl_type::i64vec4_type),  \
                 NULL);
 
 #define FIUD_VEC(NAME)                                            \
@@ -1639,14 +1733,14 @@ builtin_builder::create_builtins()
                 _##NAME(fp64, glsl_type::dvec2_type),  \
                 _##NAME(fp64, glsl_type::dvec3_type),  \
                 _##NAME(fp64, glsl_type::dvec4_type),  \
-                _##NAME(int64, glsl_type::int64_t_type), \
-                _##NAME(int64, glsl_type::i64vec2_type),  \
-                _##NAME(int64, glsl_type::i64vec3_type),  \
-                _##NAME(int64, glsl_type::i64vec4_type),  \
-                _##NAME(int64, glsl_type::uint64_t_type), \
-                _##NAME(int64, glsl_type::u64vec2_type),  \
-                _##NAME(int64, glsl_type::u64vec3_type),  \
-                _##NAME(int64, glsl_type::u64vec4_type),  \
+                _##NAME(int64_avail, glsl_type::int64_t_type), \
+                _##NAME(int64_avail, glsl_type::i64vec2_type),  \
+                _##NAME(int64_avail, glsl_type::i64vec3_type),  \
+                _##NAME(int64_avail, glsl_type::i64vec4_type),  \
+                _##NAME(int64_avail, glsl_type::uint64_t_type), \
+                _##NAME(int64_avail, glsl_type::u64vec2_type),  \
+                _##NAME(int64_avail, glsl_type::u64vec3_type),  \
+                _##NAME(int64_avail, glsl_type::u64vec4_type),  \
                 NULL);
 
 #define IU(NAME)                                \
@@ -1683,14 +1777,14 @@ builtin_builder::create_builtins()
                 _##NAME(fp64, glsl_type::dvec2_type), \
                 _##NAME(fp64, glsl_type::dvec3_type), \
                 _##NAME(fp64, glsl_type::dvec4_type), \
-                _##NAME(int64, glsl_type::int64_t_type), \
-                _##NAME(int64, glsl_type::i64vec2_type),  \
-                _##NAME(int64, glsl_type::i64vec3_type),  \
-                _##NAME(int64, glsl_type::i64vec4_type),  \
-                _##NAME(int64, glsl_type::uint64_t_type), \
-                _##NAME(int64, glsl_type::u64vec2_type),  \
-                _##NAME(int64, glsl_type::u64vec3_type),  \
-                _##NAME(int64, glsl_type::u64vec4_type),  \
+                _##NAME(int64_avail, glsl_type::int64_t_type), \
+                _##NAME(int64_avail, glsl_type::i64vec2_type),  \
+                _##NAME(int64_avail, glsl_type::i64vec3_type),  \
+                _##NAME(int64_avail, glsl_type::i64vec4_type),  \
+                _##NAME(int64_avail, glsl_type::uint64_t_type), \
+                _##NAME(int64_avail, glsl_type::u64vec2_type),  \
+                _##NAME(int64_avail, glsl_type::u64vec3_type),  \
+                _##NAME(int64_avail, glsl_type::u64vec4_type),  \
                 NULL);
 
 #define FIUD2_MIXED(NAME)                                                                 \
@@ -1730,20 +1824,20 @@ builtin_builder::create_builtins()
                 _##NAME(fp64, glsl_type::dvec3_type, glsl_type::dvec3_type),           \
                 _##NAME(fp64, glsl_type::dvec4_type, glsl_type::dvec4_type),           \
                                                                         \
-                _##NAME(int64, glsl_type::int64_t_type, glsl_type::int64_t_type),           \
-                _##NAME(int64, glsl_type::i64vec2_type, glsl_type::int64_t_type),           \
-                _##NAME(int64, glsl_type::i64vec3_type, glsl_type::int64_t_type),           \
-                _##NAME(int64, glsl_type::i64vec4_type, glsl_type::int64_t_type),           \
-                _##NAME(int64, glsl_type::i64vec2_type, glsl_type::i64vec2_type),           \
-                _##NAME(int64, glsl_type::i64vec3_type, glsl_type::i64vec3_type),           \
-                _##NAME(int64, glsl_type::i64vec4_type, glsl_type::i64vec4_type),           \
-                _##NAME(int64, glsl_type::uint64_t_type, glsl_type::uint64_t_type),           \
-                _##NAME(int64, glsl_type::u64vec2_type, glsl_type::uint64_t_type),           \
-                _##NAME(int64, glsl_type::u64vec3_type, glsl_type::uint64_t_type),           \
-                _##NAME(int64, glsl_type::u64vec4_type, glsl_type::uint64_t_type),           \
-                _##NAME(int64, glsl_type::u64vec2_type, glsl_type::u64vec2_type),           \
-                _##NAME(int64, glsl_type::u64vec3_type, glsl_type::u64vec3_type),           \
-                _##NAME(int64, glsl_type::u64vec4_type, glsl_type::u64vec4_type),           \
+                _##NAME(int64_avail, glsl_type::int64_t_type, glsl_type::int64_t_type),     \
+                _##NAME(int64_avail, glsl_type::i64vec2_type, glsl_type::int64_t_type),     \
+                _##NAME(int64_avail, glsl_type::i64vec3_type, glsl_type::int64_t_type),     \
+                _##NAME(int64_avail, glsl_type::i64vec4_type, glsl_type::int64_t_type),     \
+                _##NAME(int64_avail, glsl_type::i64vec2_type, glsl_type::i64vec2_type),     \
+                _##NAME(int64_avail, glsl_type::i64vec3_type, glsl_type::i64vec3_type),     \
+                _##NAME(int64_avail, glsl_type::i64vec4_type, glsl_type::i64vec4_type),     \
+                _##NAME(int64_avail, glsl_type::uint64_t_type, glsl_type::uint64_t_type),   \
+                _##NAME(int64_avail, glsl_type::u64vec2_type, glsl_type::uint64_t_type),    \
+                _##NAME(int64_avail, glsl_type::u64vec3_type, glsl_type::uint64_t_type),    \
+                _##NAME(int64_avail, glsl_type::u64vec4_type, glsl_type::uint64_t_type),    \
+                _##NAME(int64_avail, glsl_type::u64vec2_type, glsl_type::u64vec2_type),     \
+                _##NAME(int64_avail, glsl_type::u64vec3_type, glsl_type::u64vec3_type),     \
+                _##NAME(int64_avail, glsl_type::u64vec4_type, glsl_type::u64vec4_type),     \
                 NULL);
 
    F(radians)
@@ -1781,9 +1875,9 @@ builtin_builder::create_builtins()
    FI64(abs)
    FI64(sign)
    FD(floor)
-   FD(trunc)
-   FD(round)
-   FD(roundEven)
+   FD130(trunc)
+   FD130GS4(round)
+   FD130(roundEven)
    FD(ceil)
    FD(fract)
 
@@ -1815,7 +1909,7 @@ builtin_builder::create_builtins()
                 _mod(fp64, glsl_type::dvec4_type,  glsl_type::dvec4_type),
                 NULL);
 
-   FD(modf)
+   FD130(modf)
 
    FIUD2_MIXED(min)
    FIUD2_MIXED(max)
@@ -1865,15 +1959,15 @@ builtin_builder::create_builtins()
                 _mix_sel(shader_integer_mix, glsl_type::bvec3_type, glsl_type::bvec3_type),
                 _mix_sel(shader_integer_mix, glsl_type::bvec4_type, glsl_type::bvec4_type),
 
-                _mix_sel(int64, glsl_type::int64_t_type, glsl_type::bool_type),
-                _mix_sel(int64, glsl_type::i64vec2_type, glsl_type::bvec2_type),
-                _mix_sel(int64, glsl_type::i64vec3_type, glsl_type::bvec3_type),
-                _mix_sel(int64, glsl_type::i64vec4_type, glsl_type::bvec4_type),
+                _mix_sel(int64_avail, glsl_type::int64_t_type, glsl_type::bool_type),
+                _mix_sel(int64_avail, glsl_type::i64vec2_type, glsl_type::bvec2_type),
+                _mix_sel(int64_avail, glsl_type::i64vec3_type, glsl_type::bvec3_type),
+                _mix_sel(int64_avail, glsl_type::i64vec4_type, glsl_type::bvec4_type),
 
-                _mix_sel(int64, glsl_type::uint64_t_type,  glsl_type::bool_type),
-                _mix_sel(int64, glsl_type::u64vec2_type, glsl_type::bvec2_type),
-                _mix_sel(int64, glsl_type::u64vec3_type, glsl_type::bvec3_type),
-                _mix_sel(int64, glsl_type::u64vec4_type, glsl_type::bvec4_type),
+                _mix_sel(int64_avail, glsl_type::uint64_t_type,  glsl_type::bool_type),
+                _mix_sel(int64_avail, glsl_type::u64vec2_type, glsl_type::bvec2_type),
+                _mix_sel(int64_avail, glsl_type::u64vec3_type, glsl_type::bvec3_type),
+                _mix_sel(int64_avail, glsl_type::u64vec4_type, glsl_type::bvec4_type),
                 NULL);
 
    add_function("step",
@@ -1973,10 +2067,10 @@ builtin_builder::create_builtins()
    add_function("packDouble2x32",    _packDouble2x32(fp64),                   NULL);
    add_function("unpackDouble2x32",  _unpackDouble2x32(fp64),                 NULL);
 
-   add_function("packInt2x32",     _packInt2x32(int64),                    NULL);
-   add_function("unpackInt2x32",   _unpackInt2x32(int64),                  NULL);
-   add_function("packUint2x32",    _packUint2x32(int64),                   NULL);
-   add_function("unpackUint2x32",  _unpackUint2x32(int64),                 NULL);
+   add_function("packInt2x32",     _packInt2x32(int64_avail),                    NULL);
+   add_function("unpackInt2x32",   _unpackInt2x32(int64_avail),                  NULL);
+   add_function("packUint2x32",    _packUint2x32(int64_avail),                   NULL);
+   add_function("unpackUint2x32",  _unpackUint2x32(int64_avail),                 NULL);
 
    FD(length)
    FD(distance)
@@ -3310,8 +3404,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture1D",
-                _texture(ir_tex, v110,                      glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
-                _texture(ir_txb, v110_derivatives_only,     glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
+                _texture(ir_tex, v110_deprecated_texture,                      glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
+                _texture(ir_txb, v110_derivatives_only_deprecated_texture,     glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
                 _texture(ir_tex, gpu_shader4_integer,               glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::float_type),
                 _texture(ir_txb, gpu_shader4_integer_derivs_only,   glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::float_type),
                 _texture(ir_tex, gpu_shader4_integer,               glsl_type::uvec4_type,  glsl_type::usampler1D_type, glsl_type::float_type),
@@ -3328,10 +3422,10 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture1DProj",
-                _texture(ir_tex, v110,                  glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
-                _texture(ir_tex, v110,                  glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
-                _texture(ir_txb, v110_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
-                _texture(ir_txb, v110_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_tex, v110_deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
+                _texture(ir_tex, v110_deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txb, v110_derivatives_only_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
+                _texture(ir_txb, v110_derivatives_only_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_txb, gpu_shader4_integer_derivs_only, glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
@@ -3343,7 +3437,7 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture1DLod",
-                _texture(ir_txl, tex1d_lod, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
+                _texture(ir_txl, v110_lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::float_type),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::uvec4_type,  glsl_type::usampler1D_type, glsl_type::float_type),
                 NULL);
@@ -3355,8 +3449,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture1DProjLod",
-                _texture(ir_txl, tex1d_lod, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
-                _texture(ir_txl, tex1d_lod, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txl, v110_lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
+                _texture(ir_txl, v110_lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::ivec4_type,  glsl_type::isampler1D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::uvec4_type,  glsl_type::usampler1D_type, glsl_type::vec2_type, TEX_PROJECT),
@@ -3364,8 +3458,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture2D",
-                _texture(ir_tex, always_available,        glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec2_type),
-                _texture(ir_txb, derivatives_only,        glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec2_type),
+                _texture(ir_tex, deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec2_type),
+                _texture(ir_txb, deprecated_texture_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec2_type),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec2_type),
                 _texture(ir_txb, gpu_shader4_integer_derivs_only, glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec2_type),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::uvec4_type,  glsl_type::usampler2D_type, glsl_type::vec2_type),
@@ -3383,10 +3477,10 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture2DProj",
-                _texture(ir_tex, always_available,        glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
-                _texture(ir_tex, always_available,        glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
-                _texture(ir_txb, derivatives_only,        glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
-                _texture(ir_txb, derivatives_only,        glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_tex, deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
+                _texture(ir_tex, deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txb, deprecated_texture_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
+                _texture(ir_txb, deprecated_texture_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_txb, gpu_shader4_integer_derivs_only, glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
@@ -3400,7 +3494,7 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture2DLod",
-                _texture(ir_txl, lod_exists_in_stage, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec2_type),
+                _texture(ir_txl, lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec2_type),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec2_type),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::uvec4_type,  glsl_type::usampler2D_type, glsl_type::vec2_type),
                 NULL);
@@ -3412,8 +3506,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("texture2DProjLod",
-                _texture(ir_txl, lod_exists_in_stage, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
-                _texture(ir_txl, lod_exists_in_stage, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txl, lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
+                _texture(ir_txl, lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::ivec4_type,  glsl_type::isampler2D_type, glsl_type::vec4_type, TEX_PROJECT),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::uvec4_type,  glsl_type::usampler2D_type, glsl_type::vec3_type, TEX_PROJECT),
@@ -3451,8 +3545,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("textureCube",
-                _texture(ir_tex, always_available,        glsl_type::vec4_type,  glsl_type::samplerCube_type, glsl_type::vec3_type),
-                _texture(ir_txb, derivatives_only,        glsl_type::vec4_type,  glsl_type::samplerCube_type, glsl_type::vec3_type),
+                _texture(ir_tex, deprecated_texture,                  glsl_type::vec4_type,  glsl_type::samplerCube_type, glsl_type::vec3_type),
+                _texture(ir_txb, deprecated_texture_derivatives_only, glsl_type::vec4_type,  glsl_type::samplerCube_type, glsl_type::vec3_type),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::ivec4_type,  glsl_type::isamplerCube_type, glsl_type::vec3_type),
                 _texture(ir_txb, gpu_shader4_integer_derivs_only, glsl_type::ivec4_type,  glsl_type::isamplerCube_type, glsl_type::vec3_type),
                 _texture(ir_tex, gpu_shader4_integer,             glsl_type::uvec4_type,  glsl_type::usamplerCube_type, glsl_type::vec3_type),
@@ -3460,7 +3554,7 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("textureCubeLod",
-                _texture(ir_txl, lod_exists_in_stage, glsl_type::vec4_type,  glsl_type::samplerCube_type, glsl_type::vec3_type),
+                _texture(ir_txl, lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::samplerCube_type, glsl_type::vec3_type),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::ivec4_type,  glsl_type::isamplerCube_type, glsl_type::vec3_type),
                 _texture(ir_txl, gpu_shader4_integer, glsl_type::uvec4_type,  glsl_type::usamplerCube_type, glsl_type::vec3_type),
                 NULL);
@@ -3481,8 +3575,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("shadow1D",
-                _texture(ir_tex, v110,                  glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec3_type),
-                _texture(ir_txb, v110_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec3_type),
+                _texture(ir_tex, v110_deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec3_type),
+                _texture(ir_txb, v110_derivatives_only_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec3_type),
                 NULL);
 
    add_function("shadow1DArray",
@@ -3491,8 +3585,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("shadow2D",
-                _texture(ir_tex, v110,                  glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec3_type),
-                _texture(ir_txb, v110_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec3_type),
+                _texture(ir_tex, v110_deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec3_type),
+                _texture(ir_txb, v110_derivatives_only_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec3_type),
                 NULL);
 
    add_function("shadow2DArray",
@@ -3501,8 +3595,8 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("shadow1DProj",
-                _texture(ir_tex, v110,                  glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
-                _texture(ir_txb, v110_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_tex, v110_deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txb, v110_derivatives_only_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
                 NULL);
 
    add_function("shadow2DArray",
@@ -3516,16 +3610,16 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("shadow2DProj",
-                _texture(ir_tex, v110,                  glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
-                _texture(ir_txb, v110_derivatives_only, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_tex, v110_deprecated_texture,                  glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txb, v110_derivatives_only_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
                 NULL);
 
    add_function("shadow1DLod",
-                _texture(ir_txl, v110_lod, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec3_type),
+                _texture(ir_txl, v110_lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec3_type),
                 NULL);
 
    add_function("shadow2DLod",
-                _texture(ir_txl, v110_lod, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec3_type),
+                _texture(ir_txl, v110_lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec3_type),
                 NULL);
 
    add_function("shadow1DArrayLod",
@@ -3533,11 +3627,11 @@ builtin_builder::create_builtins()
                 NULL);
 
    add_function("shadow1DProjLod",
-                _texture(ir_txl, v110_lod, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txl, v110_lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler1DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
                 NULL);
 
    add_function("shadow2DProjLod",
-                _texture(ir_txl, v110_lod, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
+                _texture(ir_txl, v110_lod_deprecated_texture, glsl_type::vec4_type,  glsl_type::sampler2DShadow_type, glsl_type::vec4_type, TEX_PROJECT),
                 NULL);
 
    add_function("shadow2DRect",
@@ -4036,6 +4130,9 @@ builtin_builder::create_builtins()
                 _atomic_op2("__intrinsic_atomic_add",
                             shader_atomic_float_add,
                             glsl_type::float_type),
+                _atomic_op2("__intrinsic_atomic_add",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 NULL);
    add_function("atomicMin",
                 _atomic_op2("__intrinsic_atomic_min",
@@ -4047,6 +4144,12 @@ builtin_builder::create_builtins()
                 _atomic_op2("__intrinsic_atomic_min",
                             shader_atomic_float_minmax,
                             glsl_type::float_type),
+                _atomic_op2("__intrinsic_atomic_min",
+                            buffer_int64_atomics_supported,
+                            glsl_type::uint64_t_type),
+                _atomic_op2("__intrinsic_atomic_min",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 NULL);
    add_function("atomicMax",
                 _atomic_op2("__intrinsic_atomic_max",
@@ -4058,6 +4161,12 @@ builtin_builder::create_builtins()
                 _atomic_op2("__intrinsic_atomic_max",
                             shader_atomic_float_minmax,
                             glsl_type::float_type),
+                _atomic_op2("__intrinsic_atomic_max",
+                            buffer_int64_atomics_supported,
+                            glsl_type::uint64_t_type),
+                _atomic_op2("__intrinsic_atomic_max",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 NULL);
    add_function("atomicAnd",
                 _atomic_op2("__intrinsic_atomic_and",
@@ -4066,6 +4175,12 @@ builtin_builder::create_builtins()
                 _atomic_op2("__intrinsic_atomic_and",
                             buffer_atomics_supported,
                             glsl_type::int_type),
+                _atomic_op2("__intrinsic_atomic_and",
+                            buffer_int64_atomics_supported,
+                            glsl_type::uint64_t_type),
+                _atomic_op2("__intrinsic_atomic_and",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 NULL);
    add_function("atomicOr",
                 _atomic_op2("__intrinsic_atomic_or",
@@ -4074,6 +4189,12 @@ builtin_builder::create_builtins()
                 _atomic_op2("__intrinsic_atomic_or",
                             buffer_atomics_supported,
                             glsl_type::int_type),
+                _atomic_op2("__intrinsic_atomic_or",
+                            buffer_int64_atomics_supported,
+                            glsl_type::uint64_t_type),
+                _atomic_op2("__intrinsic_atomic_or",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 NULL);
    add_function("atomicXor",
                 _atomic_op2("__intrinsic_atomic_xor",
@@ -4082,6 +4203,12 @@ builtin_builder::create_builtins()
                 _atomic_op2("__intrinsic_atomic_xor",
                             buffer_atomics_supported,
                             glsl_type::int_type),
+                _atomic_op2("__intrinsic_atomic_xor",
+                            buffer_int64_atomics_supported,
+                            glsl_type::uint64_t_type),
+                _atomic_op2("__intrinsic_atomic_xor",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 NULL);
    add_function("atomicExchange",
                 _atomic_op2("__intrinsic_atomic_exchange",
@@ -4090,6 +4217,9 @@ builtin_builder::create_builtins()
                 _atomic_op2("__intrinsic_atomic_exchange",
                             buffer_atomics_supported,
                             glsl_type::int_type),
+                _atomic_op2("__intrinsic_atomic_exchange",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 _atomic_op2("__intrinsic_atomic_exchange",
                             shader_atomic_float_exchange,
                             glsl_type::float_type),
@@ -4101,6 +4231,9 @@ builtin_builder::create_builtins()
                 _atomic_op3("__intrinsic_atomic_comp_swap",
                             buffer_atomics_supported,
                             glsl_type::int_type),
+                _atomic_op3("__intrinsic_atomic_comp_swap",
+                            buffer_int64_atomics_supported,
+                            glsl_type::int64_t_type),
                 _atomic_op3("__intrinsic_atomic_comp_swap",
                             shader_atomic_float_minmax,
                             glsl_type::float_type),
@@ -4264,6 +4397,18 @@ builtin_builder::create_builtins()
 
    add_function("allInvocationsEqualARB",
                 _vote("__intrinsic_vote_eq", vote),
+                NULL);
+
+   add_function("anyInvocationEXT",
+                _vote("__intrinsic_vote_any", vote_ext),
+                NULL);
+
+   add_function("allInvocationsEXT",
+                _vote("__intrinsic_vote_all", vote_ext),
+                NULL);
+
+   add_function("allInvocationsEqualEXT",
+                _vote("__intrinsic_vote_eq", vote_ext),
                 NULL);
 
    add_function("anyInvocation",
@@ -4605,14 +4750,15 @@ builtin_builder::add_image_function(const char *name,
    ir_function *f = new(mem_ctx) ir_function(name);
 
    for (unsigned i = 0; i < ARRAY_SIZE(types); ++i) {
-      if ((types[i]->sampled_type != GLSL_TYPE_FLOAT ||
-           (flags & IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE)) &&
-          (types[i]->sampler_dimensionality == GLSL_SAMPLER_DIM_MS ||
-           !(flags & IMAGE_FUNCTION_MS_ONLY)))
-         f->add_signature(_image(prototype, types[i], intrinsic_name,
-                                 num_arguments, flags, intrinsic_id));
+      if (types[i]->sampled_type == GLSL_TYPE_FLOAT && !(flags & IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE))
+         continue;
+      if (types[i]->sampled_type == GLSL_TYPE_INT && !(flags & IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE))
+         continue;
+      if ((types[i]->sampler_dimensionality != GLSL_SAMPLER_DIM_MS) && (flags & IMAGE_FUNCTION_MS_ONLY))
+         continue;
+      f->add_signature(_image(prototype, types[i], intrinsic_name,
+                              num_arguments, flags, intrinsic_id));
    }
-
    shader->symbols->add_function(f);
 }
 
@@ -4626,6 +4772,7 @@ builtin_builder::add_image_functions(bool glsl)
                        &builtin_builder::_image_prototype, 0,
                        (flags | IMAGE_FUNCTION_HAS_VECTOR_DATA_TYPE |
                        IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE |
+                       IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE |
                        IMAGE_FUNCTION_READ_ONLY),
                       ir_intrinsic_image_load);
 
@@ -4635,6 +4782,7 @@ builtin_builder::add_image_functions(bool glsl)
                       (flags | IMAGE_FUNCTION_RETURNS_VOID |
                        IMAGE_FUNCTION_HAS_VECTOR_DATA_TYPE |
                        IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE |
+                       IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE |
                        IMAGE_FUNCTION_WRITE_ONLY),
                       ir_intrinsic_image_store);
 
@@ -4644,32 +4792,38 @@ builtin_builder::add_image_functions(bool glsl)
                       "__intrinsic_image_atomic_add",
                       &builtin_builder::_image_prototype, 1,
                       (flags | IMAGE_FUNCTION_AVAIL_ATOMIC_ADD |
-                       IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE),
+                       IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE |
+                       IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE),
                       ir_intrinsic_image_atomic_add);
 
    add_image_function(glsl ? "imageAtomicMin" : "__intrinsic_image_atomic_min",
                       "__intrinsic_image_atomic_min",
-                      &builtin_builder::_image_prototype, 1, atom_flags,
+                      &builtin_builder::_image_prototype, 1,
+                      atom_flags | IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE,
                       ir_intrinsic_image_atomic_min);
 
    add_image_function(glsl ? "imageAtomicMax" : "__intrinsic_image_atomic_max",
                       "__intrinsic_image_atomic_max",
-                      &builtin_builder::_image_prototype, 1, atom_flags,
+                      &builtin_builder::_image_prototype, 1,
+                      atom_flags | IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE,
                       ir_intrinsic_image_atomic_max);
 
    add_image_function(glsl ? "imageAtomicAnd" : "__intrinsic_image_atomic_and",
                       "__intrinsic_image_atomic_and",
-                      &builtin_builder::_image_prototype, 1, atom_flags,
+                      &builtin_builder::_image_prototype, 1,
+                      atom_flags | IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE,
                       ir_intrinsic_image_atomic_and);
 
    add_image_function(glsl ? "imageAtomicOr" : "__intrinsic_image_atomic_or",
                       "__intrinsic_image_atomic_or",
-                      &builtin_builder::_image_prototype, 1, atom_flags,
+                      &builtin_builder::_image_prototype, 1,
+                      atom_flags | IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE,
                       ir_intrinsic_image_atomic_or);
 
    add_image_function(glsl ? "imageAtomicXor" : "__intrinsic_image_atomic_xor",
                       "__intrinsic_image_atomic_xor",
-                      &builtin_builder::_image_prototype, 1, atom_flags,
+                      &builtin_builder::_image_prototype, 1,
+                      atom_flags | IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE,
                       ir_intrinsic_image_atomic_xor);
 
    add_image_function((glsl ? "imageAtomicExchange" :
@@ -4677,25 +4831,29 @@ builtin_builder::add_image_functions(bool glsl)
                       "__intrinsic_image_atomic_exchange",
                       &builtin_builder::_image_prototype, 1,
                       (flags | IMAGE_FUNCTION_AVAIL_ATOMIC_EXCHANGE |
+                       IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE |
                        IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE),
                       ir_intrinsic_image_atomic_exchange);
 
    add_image_function((glsl ? "imageAtomicCompSwap" :
                        "__intrinsic_image_atomic_comp_swap"),
                       "__intrinsic_image_atomic_comp_swap",
-                      &builtin_builder::_image_prototype, 2, atom_flags,
+                      &builtin_builder::_image_prototype, 2,
+                      atom_flags | IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE,
                       ir_intrinsic_image_atomic_comp_swap);
 
    add_image_function(glsl ? "imageSize" : "__intrinsic_image_size",
                       "__intrinsic_image_size",
                       &builtin_builder::_image_size_prototype, 1,
-                      flags | IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE,
+                      flags | IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE |
+                      IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE,
                       ir_intrinsic_image_size);
 
    add_image_function(glsl ? "imageSamples" : "__intrinsic_image_samples",
                       "__intrinsic_image_samples",
                       &builtin_builder::_image_samples_prototype, 1,
                       flags | IMAGE_FUNCTION_SUPPORTS_FLOAT_DATA_TYPE |
+                      IMAGE_FUNCTION_SUPPORTS_SIGNED_DATA_TYPE |
                       IMAGE_FUNCTION_MS_ONLY,
                       ir_intrinsic_image_samples);
 
@@ -7159,6 +7317,8 @@ builtin_builder::_atomic_op2(const char *intrinsic,
    ir_variable *data = in_var(type, "atomic_data");
    MAKE_SIG(type, avail, 2, atomic, data);
 
+   atomic->data.implicit_conversion_prohibited = true;
+
    ir_variable *retval = body.make_temp(type, "atomic_retval");
    body.emit(call(shader->symbols->get_function(intrinsic), retval,
                   sig->parameters));
@@ -7175,6 +7335,8 @@ builtin_builder::_atomic_op3(const char *intrinsic,
    ir_variable *data1 = in_var(type, "atomic_data1");
    ir_variable *data2 = in_var(type, "atomic_data2");
    MAKE_SIG(type, avail, 3, atomic, data1, data2);
+
+   atomic->data.implicit_conversion_prohibited = true;
 
    ir_variable *retval = body.make_temp(type, "atomic_retval");
    body.emit(call(shader->symbols->get_function(intrinsic), retval,
@@ -7582,7 +7744,6 @@ builtin_builder::_helper_invocation()
 
 /* The singleton instance of builtin_builder. */
 static builtin_builder builtins;
-static mtx_t builtins_lock = _MTX_INITIALIZER_NP;
 static uint32_t builtin_users = 0;
 
 /**

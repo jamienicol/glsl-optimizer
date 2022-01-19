@@ -43,6 +43,7 @@ extern "C" {
 #define CACHE_KEY_SIZE 20
 
 #define CACHE_DIR_NAME "mesa_shader_cache"
+#define CACHE_DIR_NAME_SF "mesa_shader_cache_sf"
 
 typedef uint8_t cache_key[CACHE_KEY_SIZE];
 
@@ -132,6 +133,12 @@ disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
       return false;
    return true;
 }
+#else
+static inline bool
+disk_cache_get_function_identifier(void *ptr, struct mesa_sha1 *ctx)
+{
+   return false;
+}
 #endif
 
 /* Provide inlined stub functions if the shader cache is disabled. */
@@ -199,6 +206,22 @@ void
 disk_cache_put(struct disk_cache *cache, const cache_key key,
                const void *data, size_t size,
                struct cache_item_metadata *cache_item_metadata);
+
+/**
+ * Store an item in the cache under the name \key without copying the data param.
+ *
+ * The item can be retrieved later with disk_cache_get(), (unless the item has
+ * been evicted in the interim).
+ *
+ * Any call to disk_cache_put() may cause an existing, random item to be
+ * evicted from the cache.
+ *
+ * @p data will be freed
+ */
+void
+disk_cache_put_nocopy(struct disk_cache *cache, const cache_key key,
+                      void *data, size_t size,
+                      struct cache_item_metadata *cache_item_metadata);
 
 /**
  * Retrieve an item previously stored in the cache with the name <key>.
@@ -270,6 +293,14 @@ static inline void
 disk_cache_put(struct disk_cache *cache, const cache_key key,
                const void *data, size_t size,
                struct cache_item_metadata *cache_item_metadata)
+{
+   return;
+}
+
+static inline void
+disk_cache_put_nocopy(struct disk_cache *cache, const cache_key key,
+                      void *data, size_t size,
+                      struct cache_item_metadata *cache_item_metadata)
 {
    return;
 }

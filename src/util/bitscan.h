@@ -104,6 +104,11 @@ u_bit_scan(unsigned *mask)
    return i;
 }
 
+#define u_foreach_bit(b, dword)                          \
+   for (uint32_t __dword = (dword), b;                     \
+        ((b) = ffs(__dword) - 1, __dword);      \
+        __dword &= ~(1 << (b)))
+
 static inline int
 u_bit_scan64(uint64_t *mask)
 {
@@ -111,6 +116,11 @@ u_bit_scan64(uint64_t *mask)
    *mask ^= (((uint64_t)1) << i);
    return i;
 }
+
+#define u_foreach_bit64(b, dword)                          \
+   for (uint64_t __dword = (dword), b;                     \
+        ((b) = ffsll(__dword) - 1, __dword);      \
+        __dword &= ~(1ull << (b)))
 
 /* Determine if an unsigned value is a power of two.
  *
@@ -306,6 +316,26 @@ util_bitcount(unsigned n)
       n &= n - 1;
    }
    return bits;
+#endif
+}
+
+/**
+ * Return the number of bits set in n using the native popcnt instruction.
+ * The caller is responsible for ensuring that popcnt is supported by the CPU.
+ *
+ * gcc doesn't use it if -mpopcnt or -march= that has popcnt is missing.
+ *
+ */
+static inline unsigned
+util_popcnt_inline_asm(unsigned n)
+{
+#if defined(USE_X86_64_ASM) || defined(USE_X86_ASM)
+   uint32_t out;
+   __asm volatile("popcnt %1, %0" : "=r"(out) : "r"(n));
+   return out;
+#else
+   /* We should never get here by accident, but I'm sure it'll happen. */
+   return util_bitcount(n);
 #endif
 }
 
