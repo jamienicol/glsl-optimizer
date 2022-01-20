@@ -975,9 +975,9 @@ void ir_print_glsl_visitor::visit(ir_texture *ir)
 	if (is_array)
 		sampler_uv_dim += 1;
 	const bool is_proj = ((ir->op == ir_tex || ir->op == ir_txb || ir->op == ir_txl || ir->op == ir_txd) && uv_dim > sampler_uv_dim);
-	const bool is_lod = (ir->op == ir_txl);
-
 	// FIXME precision/lod
+	// const bool is_lod = (ir->op == ir_txl);
+
 	// if (is_lod && state->es_shader && state->language_version < 300 && state->stage == MESA_SHADER_FRAGMENT)
 	// {
 	// 	// Special workaround for GLES 2.0 LOD samplers to prevent a lot of debug spew.
