@@ -666,6 +666,10 @@ glslopt_shader* glslopt_optimize (glslopt_ctx* ctx, glslopt_shader_type type, co
 		shader->rawOutput = _mesa_print_ir_glsl(ir, state, ralloc_strdup(shader, ""), printMode);
 	}
 
+        if (state->es_shader) {
+            lower_precision(&ctx->mesa_ctx.Const.ShaderCompilerOptions[shader->shader->Stage], ir);
+        }
+
 	// Lower builtin functions prior to linking.
 	lower_builtins(ir);
 

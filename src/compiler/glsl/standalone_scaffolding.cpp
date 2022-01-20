@@ -282,6 +282,12 @@ void initialize_context_to_defaults(struct gl_context *ctx, gl_api api)
    options.MaxUnrollIterations = 32;
    options.MaxIfDepth = UINT_MAX;
 
+   options.LowerPrecisionFloat16 = true;
+   options.LowerPrecisionInt16 = true;
+   options.LowerPrecisionDerivatives = true;
+   options.LowerPrecisionConstants = true;
+   options.LowerPrecisionFloat16Uniforms = true;
+
    for (int sh = 0; sh < MESA_SHADER_STAGES; ++sh)
       memcpy(&ctx->Const.ShaderCompilerOptions[sh], &options, sizeof(options));
 
