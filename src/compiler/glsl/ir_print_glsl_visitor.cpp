@@ -858,7 +858,8 @@ void ir_print_glsl_visitor::visit(ir_expression *ir)
 	newline_indent();
 	
 	if (ir->num_operands == 1) {
-		if (ir->operation >= ir_unop_f2i && ir->operation <= ir_unop_u2i) {
+		if ((ir->operation >= ir_unop_f2i && ir->operation <= ir_unop_f162b) ||
+		    (ir->operation >= ir_unop_i642i && ir->operation <= ir_unop_i642u64)) {
 			print_type(buffer, ir->type, true);
 			buffer.asprintf_append ("(");
 		} else if (ir->operation == ir_unop_rcp) {
