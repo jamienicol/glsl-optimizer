@@ -835,6 +835,8 @@ static const char* operator_glsl_str(ir_expression_operation op, const glsl_type
 	case ir_triop_lrp:
 		return "mix";
 	default:
+		printf("Unexpected operator in operator_glsl_str: %s\n",
+		       ir_expression_operation_strings[op]);
 		unreachable("Unexpected operator in operator_glsl_str");
 		return "UNIMPLEMENTED";
 	}
@@ -852,16 +854,102 @@ static bool is_binop_func_like(ir_expression_operation op, const glsl_type* type
 	return false;
 }
 
+static bool is_binop_cast(ir_expression_operation op) {
+    switch (op) {
+    case ir_unop_f2i:
+    case ir_unop_f2u:
+    case ir_unop_i2f:
+    case ir_unop_f2b:
+    case ir_unop_b2f:
+    case ir_unop_b2f16:
+    case ir_unop_i2b:
+    case ir_unop_b2i:
+    case ir_unop_u2f:
+    case ir_unop_i2u:
+    case ir_unop_u2i:
+    case ir_unop_d2f:
+    case ir_unop_f2d:
+    case ir_unop_f2f16:
+    case ir_unop_f2fmp:
+    case ir_unop_f162f:
+    case ir_unop_i2i:
+    case ir_unop_i2imp:
+    case ir_unop_u2u:
+    case ir_unop_u2ump:
+    case ir_unop_d2i:
+    case ir_unop_i2d:
+    case ir_unop_d2u:
+    case ir_unop_u2d:
+    case ir_unop_d2b:
+    case ir_unop_f162b:
+    case ir_unop_i642i:
+    case ir_unop_u642i:
+    case ir_unop_i642u:
+    case ir_unop_u642u:
+    case ir_unop_i642b:
+    case ir_unop_i642f:
+    case ir_unop_u642f:
+    case ir_unop_i642d:
+    case ir_unop_u642d:
+    case ir_unop_i2i64:
+    case ir_unop_u2i64:
+    case ir_unop_b2i64:
+    case ir_unop_f2i64:
+    case ir_unop_d2i64:
+    case ir_unop_i2u64:
+    case ir_unop_u2u64:
+    case ir_unop_f2u64:
+    case ir_unop_d2u64:
+    case ir_unop_u642i64:
+    case ir_unop_i642u64:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static glsl_base_type unsized_base_type(glsl_base_type base_type) {
+    switch (base_type) {
+    case GLSL_TYPE_UINT8:
+    case GLSL_TYPE_UINT16:
+    case GLSL_TYPE_UINT64:
+        return GLSL_TYPE_UINT;
+    case GLSL_TYPE_INT8:
+    case GLSL_TYPE_INT16:
+    case GLSL_TYPE_INT64:
+        return GLSL_TYPE_INT;
+    case GLSL_TYPE_FLOAT16:
+    case GLSL_TYPE_DOUBLE:
+        return GLSL_TYPE_FLOAT;
+    default:
+        return base_type;
+    }
+}
+
+static const glsl_type* unsized_type(const glsl_type* type) {
+    if (unsized_base_type(type->base_type) != type->base_type) {
+        return glsl_type::get_instance(unsized_base_type(type->base_type),
+                                       type->vector_elements,
+                                       type->matrix_columns,
+                                       type->explicit_stride,
+                                       type->interface_row_major);
+    } else {
+        return type;
+    }
+}
+
 void ir_print_glsl_visitor::visit(ir_expression *ir)
 {
 	++this->expression_depth;
 	newline_indent();
 	
 	if (ir->num_operands == 1) {
-		if ((ir->operation >= ir_unop_f2i && ir->operation <= ir_unop_f162b) ||
-		    (ir->operation >= ir_unop_i642i && ir->operation <= ir_unop_i642u64)) {
-			print_type(buffer, ir->type, true);
-			buffer.asprintf_append ("(");
+            if (is_binop_cast(ir->operation)) {
+		if (is_binop_cast(ir->operation)) {
+                    if (unsized_base_type(ir->type->base_type) != unsized_base_type(ir->operands[0]->type->base_type)) {
+                        print_type(buffer, unsized_type(ir->type), true);
+                    }
+                    buffer.asprintf_append ("(");
 		} else if (ir->operation == ir_unop_rcp) {
 			buffer.asprintf_append ("(1.0/(");
 		} else {
@@ -1567,6 +1655,9 @@ void ir_print_glsl_visitor::visit(ir_constant *ir)
 	 first = false;
 	 switch (base_type->base_type) {
 	 case GLSL_TYPE_UINT:
+	 case GLSL_TYPE_UINT8:
+	 case GLSL_TYPE_UINT16:
+	 case GLSL_TYPE_UINT64:
 	 {
 		 // ES 2.0 doesn't support uints, neither does GLSL < 130
 		 if ((state->es_shader && (state->language_version < 300))
@@ -1577,6 +1668,9 @@ void ir_print_glsl_visitor::visit(ir_constant *ir)
 		 break;
 	 }
 	 case GLSL_TYPE_INT:
+	 case GLSL_TYPE_INT8:
+	 case GLSL_TYPE_INT16:
+	 case GLSL_TYPE_INT64:
 	 {
 		 // Need special handling for INT_MIN
 		 if (ir->value.u[i] == 0x80000000)
@@ -1585,9 +1679,17 @@ void ir_print_glsl_visitor::visit(ir_constant *ir)
 			 buffer.asprintf_append("%d", ir->value.i[i]);
 		 break;
 	 }
-	 case GLSL_TYPE_FLOAT: print_float(buffer, ir->value.f[i]); break;
+	 case GLSL_TYPE_FLOAT:
+	 case GLSL_TYPE_FLOAT16:
+	 case GLSL_TYPE_DOUBLE:
+         {
+             print_float(buffer, ir->value.f[i]);
+             break;
+         }
 	 case GLSL_TYPE_BOOL:  buffer.asprintf_append ("%d", ir->value.b[i]); break;
-	 default: assert(0);
+	 default:
+             printf("unexpected type: %d\n", base_type->base_type);
+             assert(0);
 	 }
       }
    }
