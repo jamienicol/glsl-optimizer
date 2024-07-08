@@ -73,19 +73,19 @@
  * function" warnings.
  */
 #if defined(HAVE___BUILTIN_UNREACHABLE) || __has_builtin(__builtin_unreachable)
-#define unreachable(str)    \
-do {                        \
-   assert(!str);            \
-   __builtin_unreachable(); \
+#define GLSL_UNREACHABLE(str) \
+do {                          \
+   assert(!str);              \
+   __builtin_unreachable();   \
 } while (0)
 #elif defined (_MSC_VER)
-#define unreachable(str)    \
-do {                        \
-   assert(!str);            \
-   __assume(0);             \
+#define GLSL_UNREACHABLE(str) \
+do {                          \
+   assert(!str);              \
+   __assume(0);               \
 } while (0)
 #else
-#define unreachable(str) assert(!str)
+#define GLSL_UNREACHABLE(str) assert(!str)
 #endif
 
 /**
