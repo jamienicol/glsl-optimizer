@@ -2464,7 +2464,7 @@ ast_function_expression::hir(exec_list *instructions,
       return value;
    }
 
-   unreachable("not reached");
+   GLSL_UNREACHABLE("not reached");
 }
 
 bool
