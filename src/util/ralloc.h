@@ -53,6 +53,8 @@
 #include "macros.h"
 
 #ifdef __cplusplus
+#include <type_traits>
+
 extern "C" {
 #endif
 
@@ -504,7 +506,7 @@ public:                                                                  \
    {                                                                     \
       void *p = ALLOC_FUNC(mem_ctx, size);                               \
       assert(p != NULL);                                                 \
-      if (!HAS_TRIVIAL_DESTRUCTOR(TYPE))                                 \
+      if (!std::is_trivially_destructible<TYPE>())                       \
          ralloc_set_destructor(p, _ralloc_destructor);                   \
       return p;                                                          \
    }                                                                     \
@@ -515,7 +517,7 @@ public:                                                                  \
        * called by the delete operator at this point -- Make sure it's   \
        * not called again.                                               \
        */                                                                \
-      if (!HAS_TRIVIAL_DESTRUCTOR(TYPE))                                 \
+      if (!std::is_trivially_destructible<TYPE>())                       \
          ralloc_set_destructor(p, NULL);                                 \
       ralloc_free(p);                                                    \
    }
