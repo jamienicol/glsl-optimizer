@@ -1446,6 +1446,8 @@ public:
 
    /** List of ir_instruction that make up the body of the loop. */
    exec_list body_instructions;
+
+   bool is_switch = false;
 };
 
 

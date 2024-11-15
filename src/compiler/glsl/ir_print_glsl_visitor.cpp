@@ -1852,8 +1852,15 @@ ir_print_glsl_visitor::visit(ir_loop *ir)
 {
 	if (emit_canonical_for(ir))
 		return;
-	
-	buffer.asprintf_append ("while (true) {\n");
+
+	// The GLSL parser converts switch statements to an infinite loop with a break at the end.
+	// Angle is very slow to compile these, seemingly due to anaylsing it to determine it only
+	// executes once and can be unrolled. So instead of a `while (true) {}` loop we output a
+	// `do {} while (false);` which is much quicker to compile.
+	if (ir->is_switch)
+		buffer.asprintf_append ("do {\n");
+	else
+		buffer.asprintf_append ("while (true) {\n");
 	indentation++; previous_skipped = false;
 	foreach_in_list(ir_instruction, inst, &ir->body_instructions) {
 		indent();
@@ -1862,7 +1869,10 @@ ir_print_glsl_visitor::visit(ir_loop *ir)
 	}
 	indentation--;
 	indent();
-	buffer.asprintf_append ("}");
+	if (ir->is_switch)
+		buffer.asprintf_append ("} while (false)");
+	else
+		buffer.asprintf_append ("}");
 }
 
 
