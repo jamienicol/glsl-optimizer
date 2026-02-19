@@ -383,7 +383,7 @@ const glsl_type *glsl_type::get_base_type() const
    case GLSL_TYPE_FLOAT:
       return float_type;
    case GLSL_TYPE_FLOAT16:
-      return float16_t_type;
+      return glsl_float16_t_type;
    case GLSL_TYPE_DOUBLE:
       return double_type;
    case GLSL_TYPE_BOOL:
@@ -614,7 +614,7 @@ glsl_type:: vname (unsigned components)          \
 }
 
 VECN(components, float, vec)
-VECN(components, float16_t, f16vec)
+VECN(components, glsl_float16_t, f16vec)
 VECN(components, double, dvec)
 VECN(components, int, ivec)
 VECN(components, uint, uvec)

@@ -759,7 +759,7 @@ ir_validate::visit_leave(ir_expression *ir)
    case ir_binop_dot:
       assert(ir->type == glsl_type::float_type ||
              ir->type == glsl_type::double_type ||
-             ir->type == glsl_type::float16_t_type);
+             ir->type == glsl_type::glsl_float16_t_type);
       assert(ir->operands[0]->type->is_float_16_32_64());
       assert(ir->operands[0]->type->is_vector());
       assert(ir->operands[0]->type == ir->operands[1]->type);
@@ -817,7 +817,7 @@ ir_validate::visit_leave(ir_expression *ir)
       assert(ir->operands[2]->type == ir->operands[0]->type ||
              ir->operands[2]->type == glsl_type::float_type ||
              ir->operands[2]->type == glsl_type::double_type ||
-             ir->operands[2]->type == glsl_type::float16_t_type);
+             ir->operands[2]->type == glsl_type::glsl_float16_t_type);
       break;
 
    case ir_triop_csel:
